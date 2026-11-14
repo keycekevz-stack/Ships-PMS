@@ -52,6 +52,7 @@ Running-hours jobs are placed in the "due by" lists assuming the machinery runs 
 - **Frequency** dropdown: *One-time*, *Weekly*, *Monthly*, *Annually* or *Running hours*.
 - **How many** dropdown: every 1–52 weeks, 1–60 months or 1–30 years (e.g. Monthly → every 3 months). For running hours, type the interval (e.g. every 4,000 h).
 - **One-time** jobs (e.g. a defect found during the weekly inspection) have a due date. Recording the work done marks them completed.
+- **Work instructions**: when creating or editing a job, attach **PDF or Word (.doc / .docx)** files, or photos. Jobs with instructions show 📎 in the schedule table. Tap a job to see its instructions and tap one to open it. PDFs open in the app. Word files open in Word, Google Docs or WPS Office, so one of these must be installed on the phone. The files are included in backups.
 - *Record work done* on a job saves it to the history and moves the next due date forward.
 - *Log work* records unplanned or corrective work.
 - **At least one photo is required** before a work report can be saved (camera or gallery). Photos are resized to save space.

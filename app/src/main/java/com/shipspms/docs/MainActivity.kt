@@ -950,10 +950,48 @@ class MainActivity : AppCompatActivity() {
 
     private fun showJobDetails(job: Job) {
         val done = store.status(job) == JobStatus.DONE
+        val files = store.jobFiles(job.id)
+        val caps = store.captions(store.jobDir(job.id))
+        val d = resources.displayMetrics.density
+        val pad = (20 * d).toInt()
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad / 2, pad, 0)
+            addView(TextView(this@MainActivity).apply {
+                text = store.path(job.nodeId) + "\n" + describeJob(job) +
+                    if (job.instructions.isNotBlank()) "\n\n${job.instructions}" else ""
+                textSize = 15f
+                setTextIsSelectable(true)
+            })
+            if (files.isNotEmpty()) {
+                addView(TextView(this@MainActivity).apply {
+                    text = "Work instructions – tap to open"
+                    setTypeface(null, android.graphics.Typeface.BOLD)
+                    setPadding(0, pad, 0, (4 * d).toInt())
+                })
+                files.forEachIndexed { i, f ->
+                    addView(TextView(this@MainActivity).apply {
+                        val icon = when {
+                            Images.isImage(f) -> "🖼"
+                            f.extension.equals("pdf", true) -> "📕"
+                            f.extension.lowercase().startsWith("doc") -> "📘"
+                            else -> "📄"
+                        }
+                        text = "$icon  " + (caps[f.name]?.takeIf { it.isNotBlank() } ?: f.name)
+                        textSize = 15f
+                        setTextColor(getColor(R.color.sea))
+                        setPadding(0, (8 * d).toInt(), 0, (8 * d).toInt())
+                        val tv = android.util.TypedValue()
+                        theme.resolveAttribute(android.R.attr.selectableItemBackground, tv, true)
+                        setBackgroundResource(tv.resourceId)
+                        setOnClickListener { openFiles(files, i, job.title) }
+                    })
+                }
+            }
+        }
         MaterialAlertDialogBuilder(this)
             .setTitle(job.title)
-            .setMessage(store.path(job.nodeId) + "\n" + describeJob(job) +
-                if (job.instructions.isNotBlank()) "\n\n${job.instructions}" else "")
+            .setView(android.widget.ScrollView(this).apply { addView(content) })
             .setPositiveButton(if (done) "Reopen" else "✔ Record work done") { _, _ ->
                 if (canEdit()) { if (done) reopen(job) else showRecordDialog(job.nodeId, job, null) }
             }
@@ -1100,12 +1138,20 @@ class MainActivity : AppCompatActivity() {
         dueField.setOnClickListener { pickDate(due) { due = it!!; dueField.setText(dateFmt.format(Date(due))) } }
         updateUi()
 
+        val jobId = existing?.id ?: PmsStore.newId()
+        val attachments = FileSession(
+            v, store.jobDir(jobId), store.jobFiles(jobId), "Work instructions – PDF or Word (optional)",
+            allowPdf = true, title = "Work instructions",
+            fileTypes = WORK_INSTRUCTION_TYPES, fileButton = "PDF / Word",
+        )
+
         val dialog = MaterialAlertDialogBuilder(this)
             .setTitle(if (existing == null) "New maintenance job" else "Edit job")
             .setView(v)
             .setPositiveButton(R.string.save, null)
             .setNegativeButton(R.string.cancel, null)
             .create()
+        attachments.attachTo(dialog)
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 val t = title.text.toString().trim()
@@ -1115,7 +1161,8 @@ class MainActivity : AppCompatActivity() {
                 hoursLayout.error = if (repeat == 4 && n <= 0) "Enter the running hours" else null
                 if (t.isEmpty() || (repeat == 4 && n <= 0)) return@setOnClickListener
 
-                val job = (existing ?: Job(PmsStore.newId(), nodeId, t, maxOf(n, 1), u, date, null, "")).apply {
+                attachments.commit()
+                val job = (existing ?: Job(jobId, nodeId, t, maxOf(n, 1), u, date, null, "")).apply {
                     this.title = t
                     this.recurring = repeat != 0
                     this.instructions = instructions.text.toString().trim()
@@ -1715,7 +1762,7 @@ class MainActivity : AppCompatActivity() {
                 JobStatus.OK -> "OK"
                 JobStatus.DONE -> "DONE"
             }
-            SchedCol.JOB -> j.title
+            SchedCol.JOB -> j.title + if (store.jobFiles(j.id).isNotEmpty()) "  📎" else ""
             SchedCol.UNIT -> store.path(j.nodeId)
             SchedCol.FREQ -> if (j.recurring) freqLabel(j.intervalValue, j.unit) else "One-time"
             SchedCol.LAST -> when {
@@ -2287,6 +2334,8 @@ class MainActivity : AppCompatActivity() {
         private val labelText: String,
         allowPdf: Boolean,
         private val title: String,
+        private val fileTypes: Array<String> = arrayOf("application/pdf", "image/*"),
+        fileButton: String = "PDF",
     ) {
         val files = existing.toMutableList()
         val captions = store.captions(dir).toMutableMap()
@@ -2304,7 +2353,8 @@ class MainActivity : AppCompatActivity() {
             }
             root.findViewById<View>(R.id.att_file).apply {
                 visibility = if (allowPdf) View.VISIBLE else View.GONE
-                setOnClickListener { pickAttachments.launch(arrayOf("application/pdf", "image/*")) }
+                (this as? TextView)?.text = fileButton
+                setOnClickListener { pickAttachments.launch(fileTypes) }
             }
             render()
         }
@@ -2354,10 +2404,13 @@ class MainActivity : AppCompatActivity() {
                     setBackgroundColor(0x22888888)
                     contentDescription = f.name
                     if (Images.isImage(f)) setImageBitmap(Images.thumbnail(f, size))
-                    else { setImageResource(R.drawable.ic_pdf); scaleType = ImageView.ScaleType.CENTER_INSIDE }
+                    else {
+                        setImageResource(if (f.extension.equals("pdf", true)) R.drawable.ic_pdf else R.drawable.ic_cert)
+                        scaleType = ImageView.ScaleType.CENTER_INSIDE
+                    }
                 })
                 cell.addView(TextView(this@MainActivity).apply {
-                    text = captions[f.name]?.takeIf { it.isNotBlank() } ?: "+ description"
+                    text = captions[f.name]?.takeIf { it.isNotBlank() } ?: if (Images.isImage(f)) "+ description" else f.name
                     alpha = if (captions[f.name].isNullOrBlank()) 0.55f else 1f
                     textSize = 11f
                     maxLines = 2
@@ -2664,8 +2717,22 @@ class MainActivity : AppCompatActivity() {
 fun uriFor(context: Context, file: File): Uri =
     FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
 
+/** File types allowed as work instructions: PDF, Word (.doc/.docx), RTF, text and photos. */
+val WORK_INSTRUCTION_TYPES = arrayOf(
+    "application/pdf",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/rtf",
+    "text/plain",
+    "image/*",
+)
+
 fun mimeOf(file: File): String = when (file.extension.lowercase()) {
     "pdf" -> "application/pdf"
+    "doc" -> "application/msword"
+    "docx" -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    "rtf" -> "application/rtf"
+    "txt" -> "text/plain"
     "jpg", "jpeg" -> "image/jpeg"
     "png" -> "image/png"
     "webp" -> "image/webp"
@@ -2688,6 +2755,7 @@ fun openWithOtherApp(context: Context, file: File) {
     try {
         context.startActivity(Intent.createChooser(view, "Open with"))
     } catch (e: ActivityNotFoundException) {
-        Toast.makeText(context, "No app found to open this file", Toast.LENGTH_SHORT).show()
+        val hint = if (file.extension.lowercase().startsWith("doc")) " Install Microsoft Word, Google Docs or WPS Office to open Word files." else ""
+        Toast.makeText(context, "No app found to open this file.$hint", Toast.LENGTH_LONG).show()
     }
 }

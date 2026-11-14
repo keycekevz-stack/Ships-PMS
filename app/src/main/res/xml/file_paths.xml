@@ -4,6 +4,7 @@
     <files-path name="photos" path="pms_photos/" />
     <files-path name="certs" path="pms_certs/" />
     <files-path name="parts" path="pms_parts/" />
+    <files-path name="jobs" path="pms_jobs/" />
     <cache-path name="camera" path="camera/" />
     <cache-path name="reports" path="reports/" />
 </paths>

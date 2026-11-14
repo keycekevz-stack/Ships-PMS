@@ -147,6 +147,7 @@ class PmsStore private constructor(context: Context) {
     private val photosRoot = File(ctx.filesDir, "pms_photos")
     private val certsRoot = File(ctx.filesDir, "pms_certs")
     private val partsRoot = File(ctx.filesDir, "pms_parts")
+    private val jobsRoot = File(ctx.filesDir, "pms_jobs")
 
     val ships = mutableListOf<Ship>()
     val nodes = mutableListOf<Node>()
@@ -465,6 +466,7 @@ class PmsStore private constructor(context: Context) {
         val ids = subtreeIds(id, "")
         records.filter { it.nodeId in ids }.forEach { photoDir(it.id).deleteRecursively() }
         certs.filter { it.nodeId in ids }.forEach { certDir(it.id).deleteRecursively() }
+        jobs.filter { it.nodeId in ids }.forEach { jobDir(it.id).deleteRecursively() }
         nodes.removeAll { it.id in ids }
         jobs.removeAll { it.nodeId in ids }
         records.removeAll { it.nodeId in ids }
@@ -572,8 +574,14 @@ class PmsStore private constructor(context: Context) {
 
     fun deleteJob(job: Job) {
         jobs.removeAll { it.id == job.id }
+        jobDir(job.id).deleteRecursively()
         save()
     }
+
+    /** Work instructions (PDF, Word, photos) attached to a job: files/pms_jobs/<jobId>/. */
+    fun jobDir(jobId: String) = File(jobsRoot, jobId)
+
+    fun jobFiles(jobId: String): List<File> = visibleFiles(jobDir(jobId))
 
     /**
      * Saves a work record. For a recurring job, "last done" moves forward;
@@ -773,7 +781,16 @@ class PmsStore private constructor(context: Context) {
             Images.saveScaled(ctx, uri, target)
             return target
         }
-        val ext = name.substringAfterLast('.', "pdf").lowercase().take(5).ifBlank { "pdf" }
+        val nameExt = name.substringAfterLast('.', "").lowercase().take(5)
+        val ext = nameExt.ifBlank {
+            when (type) {
+                "application/msword" -> "doc"
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document" -> "docx"
+                "application/rtf" -> "rtf"
+                "text/plain" -> "txt"
+                else -> "pdf"
+            }
+        }
         return copyInto(uri, dir, ext)
     }
 
@@ -817,7 +834,7 @@ class PmsStore private constructor(context: Context) {
 
     // ---------- Backup ----------
 
-    private fun fileRoots() = mapOf("docs" to docsRoot, "photos" to photosRoot, "certs" to certsRoot, "parts" to partsRoot)
+    private fun fileRoots() = mapOf("docs" to docsRoot, "photos" to photosRoot, "certs" to certsRoot, "parts" to partsRoot, "jobs" to jobsRoot)
 
     /** Writes pms.json plus every document, photo and certificate scan into one zip file. */
     fun backup(out: OutputStream) {

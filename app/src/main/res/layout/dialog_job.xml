@@ -151,5 +151,6 @@
                 android:layout_height="wrap_content"
                 android:inputType="textMultiLine|textCapSentences" android:minLines="2" />
         </com.google.android.material.textfield.TextInputLayout>
+        <include layout="@layout/attachments_section" />
     </LinearLayout>
 </ScrollView>
