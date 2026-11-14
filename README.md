@@ -37,8 +37,9 @@ The top row of the tree is the ship's name. Select any level of the tree. The fo
 Running-hours jobs are placed in the "due by" lists assuming the machinery runs 24 hours a day, so the estimate is never later than the real due time.
 
 ## Maintenance jobs
-- **Recurring**: every X days / weeks / months / years, or every X **running hours**.
-- **One-time**: switch off "Recurring job", e.g. a defect found during the weekly inspection. Give it a due date. Recording the work done marks it completed.
+- **Repeats** dropdown: *One-time*, *Recurring – by calendar* or *Recurring – by running hours*.
+- **How often** dropdown: Daily, Weekly, Every 2 weeks, Monthly, Every 2 months, Quarterly, Every 4 months, Half-yearly, Annually, Every 18 months, Every 2 / 2½ / 3 / 4 / 5 / 10 years. For running hours: every 50 h up to 30,000 h. **Custom…** lets you enter any number.
+- **One-time** jobs (e.g. a defect found during the weekly inspection) have a due date. Recording the work done marks them completed.
 - *Record work done* on a job saves it to the history and moves the next due date forward.
 - *Log work* records unplanned or corrective work.
 - **At least one photo is required** before a work report can be saved (camera or gallery). Photos are resized to save space.
@@ -47,6 +48,9 @@ Running-hours jobs are placed in the "due by" lists assuming the machinery runs 
 ## Spare parts inventory
 - Each part has a name, part number, maker/drawing ref., store location, quantity in stock, minimum stock, unit and optional photos.
 - **Link a part to one or more units**. For example, the same fuel filter can be linked to Generators No.1, No.2 and No.3. Select a unit in the tree to see only its parts. Select the ship to see all parts.
+- Shown as a **table**: Part name · Part no. · In stock · Min. · Unit · Location · Maker/ref. · Used on. Swipe sideways to see all columns.
+- **Tap a column heading to sort by it**, and tap it again to reverse the order (▲/▼). The app remembers your choice. Low stock shows in amber and out of stock in red.
+- Tap a row for details and Take out / Receive. Long-press a row for more options. Sharing the list sends the table as text.
 - Filters: All · Low stock (at or below minimum) · Out of stock · Not linked to a unit. Search by name, part number, maker, location or unit.
 - **− Take out / + Receive** updates the stock, and each change is kept in the part's **stock history**.
 - **Work reports can list the spare parts used.** Saving the report takes them out of stock automatically. Editing or deleting the report puts them back.

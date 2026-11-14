@@ -126,6 +126,35 @@
                 android:clipToPadding="false"
                 android:paddingBottom="96dp" />
 
+            <!-- Spare parts table: scrolls sideways; tap a column heading to sort -->
+            <HorizontalScrollView
+                android:id="@+id/parts_table"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:fillViewport="true"
+                android:visibility="gone">
+
+                <LinearLayout
+                    android:layout_width="wrap_content"
+                    android:layout_height="match_parent"
+                    android:orientation="vertical">
+
+                    <LinearLayout
+                        android:id="@+id/parts_header"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:background="?attr/colorSecondaryContainer"
+                        android:orientation="horizontal" />
+
+                    <androidx.recyclerview.widget.RecyclerView
+                        android:id="@+id/parts_list"
+                        android:layout_width="wrap_content"
+                        android:layout_height="match_parent"
+                        android:clipToPadding="false"
+                        android:paddingBottom="96dp" />
+                </LinearLayout>
+            </HorizontalScrollView>
+
             <TextView
                 android:id="@+id/empty"
                 android:layout_width="match_parent"

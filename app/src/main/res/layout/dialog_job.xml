@@ -30,57 +30,71 @@
                 android:layout_height="wrap_content"
                 android:inputType="textCapSentences" />
         </com.google.android.material.textfield.TextInputLayout>
-
-        <com.google.android.material.materialswitch.MaterialSwitch
-            android:id="@+id/recurring"
+        <com.google.android.material.textfield.TextInputLayout
+            android:id="@+id/repeat_type_layout"
+            style="@style/Widget.Material3.TextInputLayout.OutlinedBox.ExposedDropdownMenu"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:checked="true"
-            android:text="Recurring job (repeats every interval)" />
+            android:layout_marginTop="10dp"
+            android:hint="Repeats">
 
-        <TextView
-            android:id="@+id/recurring_hint"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:alpha="0.7"
-            android:text="Turn off for one-time work, e.g. a defect found during the weekly inspection."
-            android:textAppearance="?attr/textAppearanceBodySmall" />
-
-        <LinearLayout
-            android:id="@+id/recurring_group"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical">
-
-            <LinearLayout
+            <com.google.android.material.textfield.MaterialAutoCompleteTextView
+                android:id="@+id/repeat_type"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:gravity="center_vertical"
-                android:orientation="horizontal">
+                android:inputType="none" />
+        </com.google.android.material.textfield.TextInputLayout>
+        <com.google.android.material.textfield.TextInputLayout
+            android:id="@+id/frequency_layout"
+            style="@style/Widget.Material3.TextInputLayout.OutlinedBox.ExposedDropdownMenu"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:hint="How often">
 
-                <com.google.android.material.textfield.TextInputLayout
-                    style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
-                    android:layout_width="110dp"
+            <com.google.android.material.textfield.MaterialAutoCompleteTextView
+                android:id="@+id/frequency"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="none" />
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <LinearLayout
+            android:id="@+id/custom_group"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <com.google.android.material.textfield.TextInputLayout
+                android:id="@+id/interval_layout"
+                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:layout_weight="1"
+                android:hint="Every">
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/interval"
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="10dp"
-                    android:hint="Every">
+                    android:inputType="number" />
+            </com.google.android.material.textfield.TextInputLayout>
+        <com.google.android.material.textfield.TextInputLayout
+            android:id="@+id/custom_unit_layout"
+            style="@style/Widget.Material3.TextInputLayout.OutlinedBox.ExposedDropdownMenu"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:layout_weight="1" android:layout_marginStart="8dp" android:hint="Unit">
 
-                    <com.google.android.material.textfield.TextInputEditText
-                        android:id="@+id/interval"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:inputType="number" />
-                </com.google.android.material.textfield.TextInputLayout>
-
-                <Spinner
-                    android:id="@+id/unit"
-                    android:layout_width="0dp"
-                    android:layout_height="56dp"
-                    android:layout_marginStart="12dp"
-                    android:layout_marginTop="10dp"
-                    android:layout_weight="1" />
-            </LinearLayout>
+            <com.google.android.material.textfield.MaterialAutoCompleteTextView
+                android:id="@+id/custom_unit"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="none" />
+        </com.google.android.material.textfield.TextInputLayout>
+        </LinearLayout>
         <com.google.android.material.textfield.TextInputLayout
             android:id="@+id/last_date_layout"
             style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
@@ -109,7 +123,6 @@
                 android:layout_height="wrap_content"
                 android:inputType="number" />
         </com.google.android.material.textfield.TextInputLayout>
-        </LinearLayout>
         <com.google.android.material.textfield.TextInputLayout
             android:id="@+id/due_once_layout"
             style="@style/Widget.Material3.TextInputLayout.OutlinedBox"

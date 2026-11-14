@@ -137,3 +137,68 @@ class RowAdapter(
         h.more.setOnClickListener { onMore(item.payload, it) }
     }
 }
+
+// ---------------- Table (spare parts) ----------------
+
+/** One table row. [accentCol] is drawn in [accent] colour (e.g. the stock column when stock is low). */
+data class TableRow(
+    val key: String,
+    val cells: List<String>,
+    val accent: Int?,
+    val accentCol: Int,
+    val payload: Any,
+)
+
+/** Rows with fixed-width columns, so they line up with the header above them. */
+class TableAdapter(
+    private val widthsPx: List<Int>,
+    private val onClick: (Any) -> Unit,
+    private val onLongClick: (Any, View) -> Unit,
+) : ListAdapter<TableRow, TableAdapter.Holder>(object : DiffUtil.ItemCallback<TableRow>() {
+    override fun areItemsTheSame(a: TableRow, b: TableRow) = a.key == b.key
+    override fun areContentsTheSame(a: TableRow, b: TableRow) = a.cells == b.cells && a.accent == b.accent
+}) {
+
+    class Holder(val row: android.widget.LinearLayout, val cells: List<TextView>) : RecyclerView.ViewHolder(row)
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): Holder {
+        val ctx = parent.context
+        val dp = ctx.resources.displayMetrics.density
+        val row = android.widget.LinearLayout(ctx).apply {
+            orientation = android.widget.LinearLayout.HORIZONTAL
+            minimumHeight = (52 * dp).toInt()
+            layoutParams = RecyclerView.LayoutParams(widthsPx.sum(), ViewGroup.LayoutParams.WRAP_CONTENT)
+            val tv = android.util.TypedValue()
+            ctx.theme.resolveAttribute(android.R.attr.selectableItemBackground, tv, true)
+            foreground = ctx.getDrawable(tv.resourceId)
+        }
+        val cells = widthsPx.map { w ->
+            TextView(ctx).apply {
+                layoutParams = android.widget.LinearLayout.LayoutParams(w, ViewGroup.LayoutParams.MATCH_PARENT)
+                setPadding((10 * dp).toInt(), (8 * dp).toInt(), (6 * dp).toInt(), (8 * dp).toInt())
+                gravity = android.view.Gravity.CENTER_VERTICAL
+                maxLines = 3
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                textSize = 14f
+            }.also { row.addView(it) }
+        }
+        return Holder(row, cells)
+    }
+
+    override fun onBindViewHolder(h: Holder, position: Int) {
+        val item = getItem(position)
+        h.row.setBackgroundColor(if (position % 2 == 1) 0x14888888 else 0)
+        h.cells.forEachIndexed { i, tv ->
+            tv.text = item.cells.getOrElse(i) { "" }
+            val accent = item.accent
+            if (i == item.accentCol && accent != null) {
+                tv.setTextColor(accent); tv.setTypeface(null, android.graphics.Typeface.BOLD)
+            } else {
+                tv.setTextColor(com.google.android.material.color.MaterialColors.getColor(tv, com.google.android.material.R.attr.colorOnSurface))
+                tv.setTypeface(null, if (i == 0) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
+            }
+        }
+        h.row.setOnClickListener { onClick(item.payload) }
+        h.row.setOnLongClickListener { onLongClick(item.payload, it); true }
+    }
+}

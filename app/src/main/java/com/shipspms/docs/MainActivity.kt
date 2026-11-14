@@ -43,6 +43,7 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.floatingactionbutton.ExtendedFloatingActionButton
 import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.tabs.TabLayout
+import com.google.android.material.textfield.MaterialAutoCompleteTextView
 import com.google.android.material.textfield.TextInputEditText
 import com.google.android.material.textfield.TextInputLayout
 import kotlinx.coroutines.Dispatchers
@@ -81,6 +82,46 @@ class MainActivity : AppCompatActivity() {
     private enum class PartFilter(val label: String) {
         ALL("All parts"), LOW("Low stock"), OUT("Out of stock"), UNLINKED("Not linked to a unit"),
     }
+
+    /** A preset maintenance interval for the "How often" dropdown. */
+    private data class Freq(val label: String, val value: Int, val unit: IntervalUnit)
+
+    private val calendarFreqs = listOf(
+        Freq("Daily", 1, IntervalUnit.DAYS),
+        Freq("Weekly", 1, IntervalUnit.WEEKS),
+        Freq("Every 2 weeks", 2, IntervalUnit.WEEKS),
+        Freq("Monthly", 1, IntervalUnit.MONTHS),
+        Freq("Every 2 months", 2, IntervalUnit.MONTHS),
+        Freq("Quarterly (every 3 months)", 3, IntervalUnit.MONTHS),
+        Freq("Every 4 months", 4, IntervalUnit.MONTHS),
+        Freq("Half-yearly (every 6 months)", 6, IntervalUnit.MONTHS),
+        Freq("Annually", 1, IntervalUnit.YEARS),
+        Freq("Every 18 months", 18, IntervalUnit.MONTHS),
+        Freq("Every 2 years", 2, IntervalUnit.YEARS),
+        Freq("Every 2½ years (30 months)", 30, IntervalUnit.MONTHS),
+        Freq("Every 3 years", 3, IntervalUnit.YEARS),
+        Freq("Every 4 years", 4, IntervalUnit.YEARS),
+        Freq("Every 5 years", 5, IntervalUnit.YEARS),
+        Freq("Every 10 years", 10, IntervalUnit.YEARS),
+    )
+
+    private val hourFreqs by lazy {
+        listOf(50, 100, 250, 500, 750, 1000, 1500, 2000, 3000, 4000, 5000, 6000, 8000, 10000, 12000, 15000, 16000, 20000, 24000, 30000)
+            .map { Freq("Every ${numFmt.format(it)} running hours", it, IntervalUnit.HOURS) }
+    }
+
+    private val calendarUnits = listOf(IntervalUnit.DAYS, IntervalUnit.WEEKS, IntervalUnit.MONTHS, IntervalUnit.YEARS)
+
+    private enum class PartCol(val label: String, val widthDp: Int) {
+        NAME("Part name", 170), NUMBER("Part no.", 120), STOCK("In stock", 84), MIN("Min.", 64), UNIT("Unit", 60),
+        LOCATION("Location", 140), MAKER("Maker / ref.", 130), UNITS("Used on", 220),
+    }
+
+    private var partSort = PartCol.NAME
+    private var partSortAsc = true
+    private lateinit var tableAdapter: TableAdapter
+    private lateinit var partsTable: View
+    private lateinit var partsHeader: LinearLayout
 
     private lateinit var store: PmsStore
     private lateinit var treeAdapter: TreeAdapter
@@ -324,6 +365,25 @@ class MainActivity : AppCompatActivity() {
         list.layoutManager = LinearLayoutManager(this)
         list.addItemDecoration(DividerItemDecoration(this, DividerItemDecoration.VERTICAL))
         list.adapter = rowAdapter
+
+        // Spare parts table
+        partSort = PartCol.entries.getOrElse(prefs.getInt("part_sort", 0)) { PartCol.NAME }
+        partSortAsc = prefs.getBoolean("part_sort_asc", true)
+        partsTable = findViewById(R.id.parts_table)
+        partsHeader = findViewById(R.id.parts_header)
+        val density = resources.displayMetrics.density
+        val widths = PartCol.entries.map { (it.widthDp * density).toInt() }
+        tableAdapter = TableAdapter(
+            widths,
+            onClick = { p -> showPartDetails(p as SparePart) },
+            onLongClick = { p, v -> showPartMenu(p as SparePart, v) },
+        )
+        findViewById<RecyclerView>(R.id.parts_list).apply {
+            layoutManager = LinearLayoutManager(this@MainActivity)
+            adapter = tableAdapter
+            layoutParams = layoutParams.apply { width = widths.sum() }
+        }
+        renderPartsHeader()
     }
 
     private fun welcome() {
@@ -592,39 +652,7 @@ class MainActivity : AppCompatActivity() {
                     )
                 }
 
-            Tab.PARTS -> partsInScope()
-                .filter { p ->
-                    when (partFilter) {
-                        PartFilter.ALL -> true
-                        PartFilter.LOW -> store.partStatus(p) != PartStatus.OK
-                        PartFilter.OUT -> store.partStatus(p) == PartStatus.OUT
-                        PartFilter.UNLINKED -> p.nodeIds.none { store.node(it) != null }
-                    }
-                }
-                .filter { matches(it.name, it.partNumber, it.maker, it.location, it.remarks, store.partUnits(it).joinToString(" ")) }
-                .sortedWith(compareBy<SparePart> { store.partStatus(it).ordinal }.thenBy { it.name.lowercase() })
-                .map { p ->
-                    val status = store.partStatus(p)
-                    val color = when (status) {
-                        PartStatus.OUT -> getColor(R.color.status_overdue)
-                        PartStatus.LOW -> getColor(R.color.status_soon)
-                        PartStatus.OK -> getColor(R.color.status_ok)
-                    }
-                    val units = store.partUnits(p)
-                    RowItem(
-                        key = p.id, icon = R.drawable.ic_part, iconTint = color,
-                        title = p.name,
-                        line2 = listOfNotNull(
-                            p.partNumber.takeIf { it.isNotBlank() }?.let { "P/N $it" },
-                            "${p.quantity} ${p.unit} in stock" + if (p.minQuantity > 0) " (min ${p.minQuantity})" else "",
-                            p.location.takeIf { it.isNotBlank() },
-                        ).joinToString(" · "),
-                        line3 = if (units.isEmpty()) "Not linked to a unit" else "Used on: " + units.joinToString(", "),
-                        badge = when (status) { PartStatus.OUT -> "OUT OF STOCK"; PartStatus.LOW -> "LOW STOCK"; PartStatus.OK -> null },
-                        color = color,
-                        payload = p,
-                    )
-                }
+            Tab.PARTS -> emptyList()
 
             Tab.CERTS -> certsInScope()
                 .filter { c ->
@@ -664,8 +692,13 @@ class MainActivity : AppCompatActivity() {
                 }
         }
         rowAdapter.submitList(items)
+        val partRows = if (tab == Tab.PARTS) buildPartRows() else emptyList()
+        tableAdapter.submitList(partRows)
+        list.visibility = if (tab == Tab.PARTS) View.GONE else View.VISIBLE
+        partsTable.visibility = if (tab == Tab.PARTS && partRows.isNotEmpty()) View.VISIBLE else View.GONE
 
-        empty.visibility = if (items.isEmpty()) View.VISIBLE else View.GONE
+        val shown = if (tab == Tab.PARTS) partRows.size else items.size
+        empty.visibility = if (shown == 0) View.VISIBLE else View.GONE
         empty.text = when {
             store.subtreeIds(null, shipId).isEmpty() && tab != Tab.CERTS -> "Start by adding your machinery in the Ship structure (☰ menu, top left)."
             query.isNotEmpty() -> "Nothing matches “$query”."
@@ -703,8 +736,7 @@ class MainActivity : AppCompatActivity() {
             val due = j.dueOnce ?: return "One-time · No due date"
             return "One-time · Due ${dateFmt.format(Date(due))} (${inDays(PmsStore.daysUntil(due))})"
         }
-        val every = if (j.unit == IntervalUnit.HOURS) "Every ${numFmt.format(j.intervalValue)} h"
-        else "Every ${j.intervalValue} ${j.unit.short}"
+        val every = freqLabel(j.intervalValue, j.unit)
         return if (j.unit == IntervalUnit.HOURS) {
             val last = j.lastDoneHours?.let { "Last at ${numFmt.format(it)} h" } ?: "Last ${dateFmt.format(Date(j.lastDoneDate))}"
             val due = "Due at ${numFmt.format(store.dueHours(j))} h"
@@ -891,16 +923,28 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    /** "Quarterly (every 3 months)", "Every 4,000 running hours", or e.g. "Every 7 weeks" for custom intervals. */
+    private fun freqLabel(value: Int, unit: IntervalUnit): String =
+        (if (unit == IntervalUnit.HOURS) hourFreqs else calendarFreqs)
+            .firstOrNull { it.value == value && it.unit == unit }?.label
+            ?: if (unit == IntervalUnit.HOURS) "Every ${numFmt.format(value)} running hours"
+            else "Every $value ${if (value == 1) unit.short.removeSuffix("s") else unit.short}"
+
     private fun showJobDialog(existing: Job?, nodeId: String) {
         val v = layoutInflater.inflate(R.layout.dialog_job, null)
         val node = store.node(nodeId)
         v.findViewById<TextView>(R.id.item_path).text = store.path(nodeId)
         val titleLayout = v.findViewById<TextInputLayout>(R.id.job_title_layout)
         val title = v.findViewById<TextInputEditText>(R.id.job_title)
-        val recurring = v.findViewById<MaterialSwitch>(R.id.recurring)
-        val recurringGroup = v.findViewById<View>(R.id.recurring_group)
+        val repeatField = v.findViewById<MaterialAutoCompleteTextView>(R.id.repeat_type)
+        val freqLayout = v.findViewById<TextInputLayout>(R.id.frequency_layout)
+        val freqField = v.findViewById<MaterialAutoCompleteTextView>(R.id.frequency)
+        val customGroup = v.findViewById<View>(R.id.custom_group)
+        val intervalLayout = v.findViewById<TextInputLayout>(R.id.interval_layout)
         val interval = v.findViewById<TextInputEditText>(R.id.interval)
-        val unit = v.findViewById<Spinner>(R.id.unit)
+        val customUnitLayout = v.findViewById<TextInputLayout>(R.id.custom_unit_layout)
+        val customUnitField = v.findViewById<MaterialAutoCompleteTextView>(R.id.custom_unit)
+        val lastDateLayout = v.findViewById<TextInputLayout>(R.id.last_date_layout)
         val lastDate = v.findViewById<TextInputEditText>(R.id.last_date)
         val lastHoursLayout = v.findViewById<TextInputLayout>(R.id.last_hours_layout)
         val lastHours = v.findViewById<TextInputEditText>(R.id.last_hours)
@@ -908,33 +952,72 @@ class MainActivity : AppCompatActivity() {
         val dueField = v.findViewById<TextInputEditText>(R.id.due_once)
         val instructions = v.findViewById<TextInputEditText>(R.id.instructions)
 
-        unit.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, IntervalUnit.entries.map { it.label })
-        fun updateVisibility() {
-            val rec = recurring.isChecked
-            recurringGroup.visibility = if (rec) View.VISIBLE else View.GONE
-            dueLayout.visibility = if (rec) View.GONE else View.VISIBLE
-            lastHoursLayout.visibility =
-                if (rec && IntervalUnit.entries[unit.selectedItemPosition] == IntervalUnit.HOURS) View.VISIBLE else View.GONE
+        // 0 = one-time, 1 = calendar, 2 = running hours
+        val repeatLabels = arrayOf("One-time (not recurring)", "Recurring – by calendar", "Recurring – by running hours")
+        var repeat = when {
+            existing == null -> 1
+            !existing.recurring -> 0
+            existing.unit == IntervalUnit.HOURS -> 2
+            else -> 1
         }
-        unit.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(p: AdapterView<*>?, view: View?, pos: Int, id: Long) = updateVisibility()
-            override fun onNothingSelected(p: AdapterView<*>?) {}
+        fun presets() = if (repeat == 2) hourFreqs else calendarFreqs
+        // Index into presets(); presets().size means "Custom".
+        var freqIndex = 0
+        var customUnit = IntervalUnit.MONTHS
+        fun initFreq(value: Int?, unit: IntervalUnit?) {
+            val list = presets()
+            val i = list.indexOfFirst { it.value == value && it.unit == unit }
+            freqIndex = when {
+                i >= 0 -> i
+                value != null && unit != null && (unit == IntervalUnit.HOURS) == (repeat == 2) -> list.size
+                repeat == 2 -> list.indexOfFirst { it.value == 4000 }.coerceAtLeast(0)
+                else -> list.indexOfFirst { it.label == "Monthly" }.coerceAtLeast(0)
+            }
+            if (freqIndex == list.size) {
+                interval.setText(value?.toString())
+                if (unit != null && unit != IntervalUnit.HOURS) customUnit = unit
+            }
         }
-        recurring.setOnCheckedChangeListener { _, _ -> updateVisibility() }
+        initFreq(existing?.takeIf { it.recurring }?.intervalValue, existing?.takeIf { it.recurring }?.unit)
+
+        fun updateUi() {
+            val list = presets()
+            freqField.setSimpleItems((list.map { it.label } + "Custom…").toTypedArray())
+            freqField.setText(if (freqIndex >= list.size) "Custom…" else list[freqIndex].label, false)
+            val custom = repeat != 0 && freqIndex >= list.size
+            freqLayout.visibility = if (repeat == 0) View.GONE else View.VISIBLE
+            customGroup.visibility = if (custom) View.VISIBLE else View.GONE
+            customUnitLayout.visibility = if (repeat == 1) View.VISIBLE else View.GONE
+            intervalLayout.hint = if (repeat == 2) "Every … running hours" else "Every"
+            lastDateLayout.visibility = if (repeat == 0) View.GONE else View.VISIBLE
+            lastHoursLayout.visibility = if (repeat == 2) View.VISIBLE else View.GONE
+            dueLayout.visibility = if (repeat == 0) View.VISIBLE else View.GONE
+        }
+
+        repeatField.setSimpleItems(repeatLabels)
+        repeatField.setText(repeatLabels[repeat], false)
+        repeatField.setOnItemClickListener { _, _, pos, _ ->
+            if (pos != repeat) {
+                repeat = pos
+                if (repeat != 0) initFreq(null, null)
+                updateUi()
+            }
+        }
+        freqField.setOnItemClickListener { _, _, pos, _ -> freqIndex = pos; updateUi() }
+        customUnitField.setSimpleItems(calendarUnits.map { it.label }.toTypedArray())
+        customUnitField.setText(customUnit.label, false)
+        customUnitField.setOnItemClickListener { _, _, pos, _ -> customUnit = calendarUnits[pos] }
 
         var date = existing?.lastDoneDate ?: System.currentTimeMillis()
         var due = existing?.dueOnce ?: (PmsStore.startOfToday() + 7 * PmsStore.DAY + 12 * 3600_000L)
         title.setText(existing?.title)
-        recurring.isChecked = existing?.recurring ?: true
-        interval.setText(existing?.takeIf { it.recurring }?.intervalValue?.toString())
-        unit.setSelection((existing?.unit ?: IntervalUnit.MONTHS).ordinal)
         lastHours.setText((existing?.lastDoneHours ?: node?.runningHours)?.toString())
         instructions.setText(existing?.instructions)
         lastDate.setText(dateFmt.format(Date(date)))
         lastDate.setOnClickListener { pickDate(date) { date = it!!; lastDate.setText(dateFmt.format(Date(date))) } }
         dueField.setText(dateFmt.format(Date(due)))
         dueField.setOnClickListener { pickDate(due) { due = it!!; dueField.setText(dateFmt.format(Date(due))) } }
-        updateVisibility()
+        updateUi()
 
         val dialog = MaterialAlertDialogBuilder(this)
             .setTitle(if (existing == null) "New maintenance job" else "Edit job")
@@ -945,19 +1028,26 @@ class MainActivity : AppCompatActivity() {
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 val t = title.text.toString().trim()
-                val rec = recurring.isChecked
-                val n = interval.text.toString().toIntOrNull()
                 titleLayout.error = if (t.isEmpty()) "Enter the job" else null
-                interval.error = if (rec && (n == null || n <= 0)) "Required" else null
-                if (t.isEmpty() || (rec && (n == null || n <= 0))) return@setOnClickListener
-                val u = IntervalUnit.entries[unit.selectedItemPosition]
-                val job = (existing ?: Job(PmsStore.newId(), nodeId, t, n ?: 1, u, date, null, "")).apply {
+                val list = presets()
+                val custom = repeat != 0 && freqIndex >= list.size
+                val n: Int
+                val u: IntervalUnit
+                if (repeat == 0) { n = 1; u = IntervalUnit.MONTHS }
+                else if (custom) {
+                    n = interval.text.toString().toIntOrNull() ?: 0
+                    u = if (repeat == 2) IntervalUnit.HOURS else customUnit
+                } else { n = list[freqIndex].value; u = list[freqIndex].unit }
+                intervalLayout.error = if (custom && n <= 0) "Required" else null
+                if (t.isEmpty() || (custom && n <= 0)) return@setOnClickListener
+
+                val job = (existing ?: Job(PmsStore.newId(), nodeId, t, n, u, date, null, "")).apply {
                     this.title = t
-                    this.recurring = rec
+                    this.recurring = repeat != 0
                     this.instructions = instructions.text.toString().trim()
-                    if (rec) {
-                        intervalValue = n!!
-                        this.unit = u
+                    if (repeat != 0) {
+                        intervalValue = n
+                        unit = u
                         lastDoneDate = date
                         lastDoneHours = if (u == IntervalUnit.HOURS) lastHours.text.toString().toLongOrNull() else lastDoneHours
                         completed = null
@@ -1400,6 +1490,79 @@ class MainActivity : AppCompatActivity() {
     // =====================================================================
     // Spare parts
     // =====================================================================
+
+    private fun partCell(p: SparePart, c: PartCol): String = when (c) {
+        PartCol.NAME -> p.name
+        PartCol.NUMBER -> p.partNumber
+        PartCol.STOCK -> when (store.partStatus(p)) {
+            PartStatus.OUT -> "${p.quantity} · OUT"
+            PartStatus.LOW -> "${p.quantity} · LOW"
+            PartStatus.OK -> p.quantity.toString()
+        }
+        PartCol.MIN -> if (p.minQuantity > 0) p.minQuantity.toString() else "–"
+        PartCol.UNIT -> p.unit
+        PartCol.LOCATION -> p.location
+        PartCol.MAKER -> p.maker
+        PartCol.UNITS -> store.partUnits(p).joinToString(", ").ifEmpty { "Not linked" }
+    }
+
+    private fun partComparator(): Comparator<SparePart> {
+        val base: Comparator<SparePart> = when (partSort) {
+            PartCol.STOCK -> compareBy<SparePart> { it.quantity }
+            PartCol.MIN -> compareBy<SparePart> { it.minQuantity }
+            else -> compareBy<SparePart> { partCell(it, partSort).lowercase() }
+        }
+        val ordered = if (partSortAsc) base else base.reversed()
+        return ordered.thenBy { it.name.lowercase() }
+    }
+
+    private fun buildPartRows(): List<TableRow> = partsInScope()
+        .filter { p ->
+            when (partFilter) {
+                PartFilter.ALL -> true
+                PartFilter.LOW -> store.partStatus(p) != PartStatus.OK
+                PartFilter.OUT -> store.partStatus(p) == PartStatus.OUT
+                PartFilter.UNLINKED -> p.nodeIds.none { store.node(it) != null }
+            }
+        }
+        .filter { matches(it.name, it.partNumber, it.maker, it.location, it.remarks, store.partUnits(it).joinToString(" ")) }
+        .sortedWith(partComparator())
+        .map { p ->
+            TableRow(
+                key = p.id,
+                cells = PartCol.entries.map { partCell(p, it) },
+                accent = when (store.partStatus(p)) {
+                    PartStatus.OUT -> getColor(R.color.status_overdue)
+                    PartStatus.LOW -> getColor(R.color.status_soon)
+                    PartStatus.OK -> null
+                },
+                accentCol = PartCol.STOCK.ordinal,
+                payload = p,
+            )
+        }
+
+    /** Column headings; tap one to sort by it, tap again to reverse. */
+    private fun renderPartsHeader() {
+        partsHeader.removeAllViews()
+        val density = resources.displayMetrics.density
+        PartCol.entries.forEach { c ->
+            partsHeader.addView(TextView(this).apply {
+                layoutParams = LinearLayout.LayoutParams((c.widthDp * density).toInt(), LinearLayout.LayoutParams.WRAP_CONTENT)
+                setPadding((10 * density).toInt(), (12 * density).toInt(), (6 * density).toInt(), (12 * density).toInt())
+                text = c.label + if (c == partSort) (if (partSortAsc) "  ▲" else "  ▼") else ""
+                setTypeface(null, android.graphics.Typeface.BOLD)
+                val tv = android.util.TypedValue()
+                theme.resolveAttribute(android.R.attr.selectableItemBackground, tv, true)
+                setBackgroundResource(tv.resourceId)
+                setOnClickListener {
+                    if (partSort == c) partSortAsc = !partSortAsc else { partSort = c; partSortAsc = c != PartCol.STOCK }
+                    prefs.edit().putInt("part_sort", partSort.ordinal).putBoolean("part_sort_asc", partSortAsc).apply()
+                    renderPartsHeader()
+                    refreshList()
+                }
+            })
+        }
+    }
 
     /** Parts linked to the selected part of the ship; with the ship selected, all of its parts. */
     private fun partsInScope(): List<SparePart> {
@@ -1844,6 +2007,7 @@ class MainActivity : AppCompatActivity() {
 
     /** Shares what is on screen (e.g. "One-time jobs due within a week") as plain text. */
     private fun shareCurrentList() {
+        if (tab == Tab.PARTS) { sharePartsTable(); return }
         val items = rowAdapter.currentList
         if (items.isEmpty()) { toast("The list is empty"); return }
         val filters = when (tab) {
@@ -1866,6 +2030,24 @@ class MainActivity : AppCompatActivity() {
         }
         val send = Intent(Intent.ACTION_SEND).setType("text/plain")
             .putExtra(Intent.EXTRA_SUBJECT, "Ship PMS – ${tab.label}")
+            .putExtra(Intent.EXTRA_TEXT, text)
+        startActivity(Intent.createChooser(send, "Share list"))
+    }
+
+    /** Shares the spare parts table as text (one line per part, columns separated by "|"). */
+    private fun sharePartsTable() {
+        val rows = tableAdapter.currentList
+        if (rows.isEmpty()) { toast("The list is empty"); return }
+        val text = buildString {
+            append("Spare parts – ${headerPath.text}\n")
+            append(partFilter.label + " · sorted by " + partSort.label + (if (partSortAsc) " ▲" else " ▼"))
+            query.takeIf { it.isNotEmpty() }?.let { append(" · “$it”") }
+            append("\n").append(dateFmt.format(Date())).append(" · ${rows.size} parts\n\n")
+            append(PartCol.entries.joinToString(" | ") { it.label }).append('\n')
+            rows.forEach { r -> append(r.cells.joinToString(" | ") { it.ifEmpty { "–" } }).append('\n') }
+        }
+        val send = Intent(Intent.ACTION_SEND).setType("text/plain")
+            .putExtra(Intent.EXTRA_SUBJECT, "Spare parts – ${ship().name}")
             .putExtra(Intent.EXTRA_TEXT, text)
         startActivity(Intent.createChooser(send, "Share list"))
     }
