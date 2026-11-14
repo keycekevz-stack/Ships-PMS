@@ -1875,9 +1875,15 @@ class MainActivity : AppCompatActivity() {
             )
         }
         if (withPhotos) {
-            val caps = store.captions(store.photoDir(r.id))
-            store.photos(r.id).filter { Images.isImage(it) }.forEachIndexed { i, f ->
-                photo(f, "Photo ${i + 1}" + (caps[f.name]?.takeIf { it.isNotBlank() }?.let { ": $it" } ?: ""))
+            val dir = store.photoDir(r.id)
+            val caps = store.captions(dir)
+            val expl = store.explanations(dir)
+            val photos = store.photos(r.id).filter { Images.isImage(it) }
+            if (photos.isNotEmpty()) {
+                text("Photos", 10.5f, bold = true)
+                photoTable(photos.mapIndexed { i, f ->
+                    Triple(f, "Photo ${i + 1}" + (caps[f.name]?.let { " – $it" } ?: ""), expl[f.name].orEmpty())
+                })
             }
         }
     }
@@ -2339,6 +2345,7 @@ class MainActivity : AppCompatActivity() {
     ) {
         val files = existing.toMutableList()
         val captions = store.captions(dir).toMutableMap()
+        val explanations = store.explanations(dir).toMutableMap()
         private val added = mutableListOf<File>()
         private val removed = mutableListOf<File>()
         private var saved = false
@@ -2376,7 +2383,7 @@ class MainActivity : AppCompatActivity() {
         fun commit() {
             saved = true
             removed.forEach { it.delete() }
-            store.saveCaptions(dir, captions)
+            store.saveCaptions(dir, captions, explanations)
         }
 
         fun showError(msg: String) {
@@ -2384,71 +2391,143 @@ class MainActivity : AppCompatActivity() {
             error.visibility = View.VISIBLE
         }
 
+        /** Description + explanation of each file, as shown in the photo viewer. */
+        fun viewerText(): Map<String, String> = files.associate { f ->
+            f.name to listOfNotNull(captions[f.name]?.takeIf { it.isNotBlank() }, explanations[f.name]?.takeIf { it.isNotBlank() })
+                .joinToString("\n")
+        }
+
         fun render() {
             label.text = "$labelText · ${files.size}"
             strip.removeAllViews()
             val d = resources.displayMetrics.density
-            val size = (84 * d).toInt()
+            val size = (104 * d).toInt()
+            val accent = getColor(R.color.sea)
+            val ripple = android.util.TypedValue().also { theme.resolveAttribute(android.R.attr.selectableItemBackground, it, true) }.resourceId
             files.forEachIndexed { index, f ->
+                val image = Images.isImage(f)
                 val cell = LinearLayout(this@MainActivity).apply {
                     orientation = LinearLayout.VERTICAL
                     layoutParams = LinearLayout.LayoutParams(size, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                        marginEnd = (6 * d).toInt(); bottomMargin = (6 * d).toInt()
+                        marginEnd = (8 * d).toInt(); bottomMargin = (6 * d).toInt()
                     }
-                    setOnClickListener { openFiles(files.toList(), index, title, captions) }
-                    setOnLongClickListener { fileMenu(f, index); true }
                 }
+                // Photo: tap to view full screen
                 cell.addView(ImageView(this@MainActivity).apply {
                     layoutParams = LinearLayout.LayoutParams(size, size)
                     scaleType = ImageView.ScaleType.CENTER_CROP
                     setBackgroundColor(0x22888888)
                     contentDescription = f.name
-                    if (Images.isImage(f)) setImageBitmap(Images.thumbnail(f, size))
+                    if (image) setImageBitmap(Images.thumbnail(f, size))
                     else {
                         setImageResource(if (f.extension.equals("pdf", true)) R.drawable.ic_pdf else R.drawable.ic_cert)
                         scaleType = ImageView.ScaleType.CENTER_INSIDE
                     }
+                    setOnClickListener { openFiles(files.toList(), index, title, viewerText()) }
+                    setOnLongClickListener { fileMenu(f, index); true }
                 })
+                // Description: tap to write / change it
+                val desc = captions[f.name]?.takeIf { it.isNotBlank() }
                 cell.addView(TextView(this@MainActivity).apply {
-                    text = captions[f.name]?.takeIf { it.isNotBlank() } ?: if (Images.isImage(f)) "+ description" else f.name
-                    alpha = if (captions[f.name].isNullOrBlank()) 0.55f else 1f
-                    textSize = 11f
-                    maxLines = 2
+                    text = desc ?: if (image) "📝 Add description" else f.name
+                    setTextColor(if (desc == null && image) accent else currentTextColor)
+                    textSize = 12f
+                    maxLines = 3
                     ellipsize = android.text.TextUtils.TruncateAt.END
+                    setPadding(0, (4 * d).toInt(), 0, (2 * d).toInt())
+                    setBackgroundResource(ripple)
+                    setOnClickListener { editNotes(f, index) }
+                })
+                // Buttons: mark up (photos only) and remove
+                cell.addView(LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    fun button(label: String, onClick: () -> Unit) = TextView(this@MainActivity).apply {
+                        text = label
+                        textSize = 13f
+                        setTextColor(accent)
+                        setTypeface(null, android.graphics.Typeface.BOLD)
+                        setPadding((4 * d).toInt(), (6 * d).toInt(), (10 * d).toInt(), (6 * d).toInt())
+                        setBackgroundResource(ripple)
+                        setOnClickListener { onClick() }
+                    }
+                    if (image) addView(button("✎ Draw") { markUp(f) })
+                    addView(button("✕") { confirmRemove(f) })
                 })
                 strip.addView(cell)
             }
         }
 
-        /** View, mark up (draw on), describe or remove a photo/file. */
+        private fun markUp(f: File) {
+            annotate.launch(Intent(this@MainActivity, AnnotateActivity::class.java).putExtra(AnnotateActivity.EXTRA_PATH, f.absolutePath))
+        }
+
+        private fun confirmRemove(f: File) {
+            MaterialAlertDialogBuilder(this@MainActivity)
+                .setMessage("Remove this ${if (Images.isImage(f)) "photo" else "file"}?")
+                .setPositiveButton("Remove") { _, _ ->
+                    files.remove(f)
+                    captions.remove(f.name)
+                    explanations.remove(f.name)
+                    if (added.remove(f)) f.delete() else removed += f
+                    render()
+                }
+                .setNegativeButton(R.string.cancel, null)
+                .show()
+        }
+
+        /** Description (short) and explanation (details, findings, action taken) of a photo/file. */
+        private fun editNotes(f: File, index: Int) {
+            val d = resources.displayMetrics.density
+            val pad = (20 * d).toInt()
+            val descLayout = TextInputLayout(this@MainActivity, null, com.google.android.material.R.attr.textInputOutlinedStyle).apply {
+                hint = "Description (e.g. Worn bearing, DE side)"
+            }
+            val desc = TextInputEditText(descLayout.context).apply {
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+                setText(captions[f.name].orEmpty())
+            }
+            descLayout.addView(desc)
+            val explLayout = TextInputLayout(this@MainActivity, null, com.google.android.material.R.attr.textInputOutlinedStyle).apply {
+                hint = "Explanation / findings / action taken"
+            }
+            val expl = TextInputEditText(explLayout.context).apply {
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                minLines = 3
+                gravity = android.view.Gravity.TOP
+                setText(explanations[f.name].orEmpty())
+            }
+            explLayout.addView(expl)
+            val box = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(pad, pad / 2, pad, 0)
+                addView(descLayout)
+                addView(explLayout, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                    topMargin = (10 * d).toInt()
+                })
+            }
+            MaterialAlertDialogBuilder(this@MainActivity)
+                .setTitle(if (Images.isImage(f)) "Photo ${index + 1}" else f.name)
+                .setView(box)
+                .setPositiveButton(R.string.ok) { _, _ ->
+                    val t = desc.text.toString().trim()
+                    val e = expl.text.toString().trim()
+                    if (t.isBlank()) captions.remove(f.name) else captions[f.name] = t
+                    if (e.isBlank()) explanations.remove(f.name) else explanations[f.name] = e
+                    render()
+                }
+                .setNegativeButton(R.string.cancel, null)
+                .show()
+            desc.requestFocus()
+        }
+
+        /** Long-press menu: same actions as the buttons. */
         private fun fileMenu(f: File, index: Int) {
             val image = Images.isImage(f)
             val options = mutableListOf<Pair<String, () -> Unit>>()
-            options += "View" to { openFiles(files.toList(), index, title, captions) }
-            if (image) options += "✎ Mark up (draw arrows, circles, text)" to {
-                annotate.launch(Intent(this@MainActivity, AnnotateActivity::class.java).putExtra(AnnotateActivity.EXTRA_PATH, f.absolutePath))
-            }
-            options += "Description…" to {
-                promptText(
-                    "Description", captions[f.name].orEmpty(), "e.g. Worn bearing found on DE side",
-                    InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES, allowEmpty = true,
-                ) { t ->
-                    if (t.isBlank()) captions.remove(f.name) else captions[f.name] = t
-                    render()
-                }
-            }
-            options += "Remove" to {
-                MaterialAlertDialogBuilder(this@MainActivity)
-                    .setMessage("Remove this ${if (image) "photo" else "file"}?")
-                    .setPositiveButton("Remove") { _, _ ->
-                        files.remove(f)
-                        captions.remove(f.name)
-                        if (added.remove(f)) f.delete() else removed += f
-                        render()
-                    }
-                    .setNegativeButton(R.string.cancel, null)
-                    .show()
-            }
+            options += "View" to { openFiles(files.toList(), index, title, viewerText()) }
+            if (image) options += "✎ Draw on photo (arrows, circles, text)" to { markUp(f) }
+            options += "📝 Description / explanation" to { editNotes(f, index) }
+            options += "✕ Remove" to { confirmRemove(f) }
             MaterialAlertDialogBuilder(this@MainActivity)
                 .setTitle(captions[f.name]?.takeIf { it.isNotBlank() } ?: if (image) "Photo ${index + 1}" else f.name)
                 .setItems(options.map { it.first }.toTypedArray()) { _, i -> options[i].second() }
@@ -2489,7 +2568,7 @@ class MainActivity : AppCompatActivity() {
             startActivity(Intent(this, VideoPlayerActivity::class.java).putExtra(VideoPlayerActivity.EXTRA_PATH, file.absolutePath))
         } else if (Images.isImage(file)) {
             val images = files.filter { Images.isImage(it) }
-            val caps = captions ?: file.parentFile?.let { store.captions(it) }.orEmpty()
+            val caps = captions ?: file.parentFile?.let { store.photoText(it) }.orEmpty()
             startActivity(
                 Intent(this, PhotoViewerActivity::class.java)
                     .putStringArrayListExtra(PhotoViewerActivity.EXTRA_PATHS, ArrayList(images.map { it.absolutePath }))

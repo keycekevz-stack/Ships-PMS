@@ -66,6 +66,6 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:alpha="0.7"
-        android:text="Tap a photo to view it · long-press to mark up, add a description or remove"
+        android:text="Tap a photo to view it · tap the text below it for description / explanation · ✎ Draw to mark it up"
         android:textAppearance="?attr/textAppearanceBodySmall" />
 </LinearLayout>

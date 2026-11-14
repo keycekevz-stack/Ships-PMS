@@ -29,12 +29,16 @@ The top row of the tree is the ship's name. Select any level of the tree. The fo
 | **Consumables** | Works exactly like spare parts (table, stock, minimum, location, links to units, take out / receive, history), for oils, chemicals, rags, gasket sheet and similar items. Work reports have their own *Consumables used* section |
 
 ## PDF reports (A4) – print, save, share
-- **One work record**: its ⋮ menu → *PDF report*. Includes ship, unit, job, date, done by, running hours, remarks, parts used, every photo with its description, and signature lines.
+- **One work record**: its ⋮ menu → *PDF report*, or the *PDF report* button in the preview. Includes ship, unit, job, date, done by, running hours, remarks, spare parts and consumables used, and signature lines. The **photos are in a table: photo on the left, description and explanation on the right**.
 - **The whole list on screen**: ⋮ → *PDF report (print / save)*. This works on Work done (table only, or with photos), Schedule, Spare parts and Consumables.
 - After it is made: **View · Print · Save to phone · Share**.
 
 ## Photos: descriptions and mark-up
-In a work report (and on certificates and parts), **tap a photo to view it**. **Long-press** it to add a **description**, **mark it up** (pen, arrow, box, circle, text, in 6 colours, with undo) or remove it.
+In a work report (and on certificates, parts and job instructions), every photo has controls underneath it:
+- **Tap the photo** to view it full screen.
+- **📝 Add description** (tap the text) for a short **description** and a longer **explanation** (findings, action taken).
+- **✎ Draw** to mark it up: pen, arrow, box, circle and text, in 6 colours, with undo.
+- **✕** to remove it.
 Tapping a record in **Work done** opens a **preview** (details, parts and consumables used, photos). The preview has *Edit* and *PDF report* buttons. Descriptions appear in the photo viewer and in the PDF reports.
 
 ## Schedule filters

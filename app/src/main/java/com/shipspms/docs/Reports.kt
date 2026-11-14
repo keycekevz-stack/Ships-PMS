@@ -194,6 +194,57 @@ class PdfBuilder(private val title: String, private val subtitle: String) {
         bmp.recycle()
     }
 
+    /**
+     * Photos in a two-column table: the photo on the left, its title and explanation on the right.
+     * Each item is (photo file, title/description, explanation).
+     */
+    fun photoTable(items: List<Triple<File, String, String>>) {
+        if (items.isEmpty()) return
+        val pad = 6f
+        val imgW = contentW * 0.52f
+        val txtW = contentW - imgW
+        val maxImgH = 250f
+        val headPaint = textPaint(9.5f, true, Color.WHITE)
+        val bmpPaint = Paint(Paint.FILTER_BITMAP_FLAG)
+
+        fun header() {
+            val h = 20f
+            ensure(h + 120f)
+            val c = canvas!!
+            fillPaint.color = navy
+            c.drawRect(margin, y, margin + contentW, y + h, fillPaint)
+            c.drawText("Photo", margin + pad, y + 14f, headPaint)
+            c.drawText("Description / explanation", margin + imgW + pad, y + 14f, headPaint)
+            y += h
+        }
+
+        header()
+        items.forEach { (file, title, explanation) ->
+            val bmp = Images.load(file, 1200) ?: return@forEach
+            val scale = minOf((imgW - 2 * pad) / bmp.width, maxImgH / bmp.height)
+            val w = bmp.width * scale
+            val h = bmp.height * scale
+            val titleL = layout(title, textPaint(10f, true, navy), txtW - 2 * pad)
+            val bodyL = layout(
+                explanation.ifBlank { "–" },
+                textPaint(9.5f, color = if (explanation.isBlank()) Color.GRAY else Color.BLACK),
+                txtW - 2 * pad,
+            )
+            val rowH = maxOf(h, (titleL.height + 6 + bodyL.height).toFloat()) + 2 * pad
+            if (y + rowH > bottom) { newPage(); header() }
+            val c = canvas!!
+            val x = margin + (imgW - w) / 2
+            c.drawBitmap(bmp, null, RectF(x, y + pad, x + w, y + pad + h), bmpPaint)
+            c.save(); c.translate(margin + imgW + pad, y + pad); titleL.draw(c); c.restore()
+            c.save(); c.translate(margin + imgW + pad, y + pad + titleL.height + 6); bodyL.draw(c); c.restore()
+            c.drawRect(RectF(margin, y, margin + imgW, y + rowH), linePaint)
+            c.drawRect(RectF(margin + imgW, y, margin + contentW, y + rowH), linePaint)
+            y += rowH
+            bmp.recycle()
+        }
+        y += 8f
+    }
+
     /** Signature lines at the end of a report. */
     fun signatures(vararg labels: String) {
         ensure(70f)

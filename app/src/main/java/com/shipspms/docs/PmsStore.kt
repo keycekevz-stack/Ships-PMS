@@ -725,23 +725,49 @@ class PmsStore private constructor(context: Context) {
         dir.listFiles { f -> f.isFile && !f.name.startsWith(".") }?.sortedBy { it.name }.orEmpty()
 
     /** Descriptions of the photos/files in [dir], keyed by file name (stored in dir/.captions.json). */
-    fun captions(dir: File): Map<String, String> {
+    /**
+     * Notes on the photos/files in [dir], stored in dir/.captions.json as
+     * { "file.jpg": { "d": "description", "e": "explanation" } } (older files: { "file.jpg": "description" }).
+     */
+    private fun readNotes(dir: File): Map<String, Pair<String, String>> {
         val f = File(dir, ".captions.json")
         if (!f.exists()) return emptyMap()
         return try {
             val o = JSONObject(f.readText())
-            o.keys().asSequence().associateWith { o.getString(it) }
+            o.keys().asSequence().associateWith { k ->
+                val v = o.get(k)
+                if (v is JSONObject) v.optString("d") to v.optString("e") else v.toString() to ""
+            }
         } catch (e: Exception) {
             emptyMap()
         }
     }
 
-    fun saveCaptions(dir: File, captions: Map<String, String>) {
+    /** Short description of each photo/file, keyed by file name. */
+    fun captions(dir: File): Map<String, String> =
+        readNotes(dir).mapValues { it.value.first }.filterValues { it.isNotBlank() }
+
+    /** Longer explanation (findings, action taken) of each photo/file, keyed by file name. */
+    fun explanations(dir: File): Map<String, String> =
+        readNotes(dir).mapValues { it.value.second }.filterValues { it.isNotBlank() }
+
+    /** Description and explanation together, for the photo viewer. */
+    fun photoText(dir: File): Map<String, String> = readNotes(dir).mapValues { (_, n) ->
+        listOf(n.first, n.second).filter { it.isNotBlank() }.joinToString("\n")
+    }
+
+    fun saveCaptions(dir: File, captions: Map<String, String>, explanations: Map<String, String> = emptyMap()) {
         val f = File(dir, ".captions.json")
-        val clean = captions.filter { (name, text) -> text.isNotBlank() && File(dir, name).exists() }
-        if (clean.isEmpty()) { f.delete(); return }
+        val names = (captions.keys + explanations.keys).filter { File(dir, it).exists() }
+        val o = JSONObject()
+        names.forEach { n ->
+            val d = captions[n].orEmpty().trim()
+            val e = explanations[n].orEmpty().trim()
+            if (d.isNotEmpty() || e.isNotEmpty()) o.put(n, JSONObject().put("d", d).put("e", e))
+        }
+        if (o.length() == 0) { f.delete(); return }
         dir.mkdirs()
-        f.writeText(JSONObject(clean).toString())
+        f.writeText(o.toString())
     }
 
     // ---------- Documents (PDF and video) ----------
