@@ -2,6 +2,14 @@
 
 A planned maintenance app for ships that works fully offline. It covers ship maintenance only (not the full SMS).
 
+## Several ships
+Keep records for every vessel you have served on. Tap the **ship name at the top** (or ⋮ → *Switch / add ship*) to switch ships or add a new one (name + IMO number).
+Each ship has its own structure, jobs, work done, certificates and documents.
+
+**Lock a ship** (⋮ → *Lock this ship*), for example when you sign off. All its records become **read-only**: you can still view and share them, but nothing can be added, changed or deleted.
+You can set a PIN so that only you can unlock it. ⋮ → *Unlock this ship* reverses it.
+The lock protects against accidental or unauthorised changes in the app. It does not encrypt the data on the phone.
+
 ## How it is organised
 **Ship structure (left side)** – a tree of your ship:
 `Main group → Sub-group → Item`, as deep as you need. Example:
@@ -9,7 +17,7 @@ A planned maintenance app for ships that works fully offline. It covers ship mai
 On a phone the tree slides in from the left (☰). On a tablet or in landscape it is always visible.
 A red dot shows where something is overdue.
 
-Select any level of the tree. The four tabs then show everything for that part of the ship and everything below it:
+The top row of the tree is the ship's name. Select any level of the tree. The four tabs then show everything for that part of the ship and everything below it:
 
 | Tab | What it shows |
 |---|---|

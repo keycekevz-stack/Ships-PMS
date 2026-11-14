@@ -8,6 +8,7 @@ import org.json.JSONObject
 import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
+import java.security.MessageDigest
 import java.util.Calendar
 import java.util.UUID
 import java.util.zip.ZipEntry
@@ -25,6 +26,19 @@ enum class IntervalUnit(val label: String, val short: String) {
 enum class JobStatus { OVERDUE, DUE_SOON, OK, DONE }
 enum class CertStatus { EXPIRED, SURVEY_OVERDUE, DUE_SOON, OK }
 
+/**
+ * A vessel. Each ship has its own structure, jobs, work records and certificates.
+ * A locked ship is read-only (e.g. after signing off); an optional PIN is needed to unlock it.
+ */
+data class Ship(
+    val id: String,
+    var name: String,
+    var imo: String = "",
+    var locked: Boolean = false,
+    var pinHash: String? = null,
+    var pinSalt: String? = null,
+)
+
 /** A place in the ship structure: a group (e.g. Engine Room), sub-group (Main Engine) or item (Fuel Pump). */
 data class Node(
     val id: String,
@@ -32,6 +46,7 @@ data class Node(
     var name: String,
     var runningHours: Long? = null,
     var hoursUpdated: Long? = null,
+    var shipId: String = "",
 )
 
 /**
@@ -76,6 +91,7 @@ data class Certificate(
     var expiryDate: Long?,
     var surveyDate: Long?,
     var remarks: String,
+    var shipId: String = "",
 )
 
 data class Doc(val file: File, val nodeId: String) {
@@ -97,6 +113,7 @@ class PmsStore private constructor(context: Context) {
     private val photosRoot = File(ctx.filesDir, "pms_photos")
     private val certsRoot = File(ctx.filesDir, "pms_certs")
 
+    val ships = mutableListOf<Ship>()
     val nodes = mutableListOf<Node>()
     val jobs = mutableListOf<Job>()
     val records = mutableListOf<WorkRecord>()
@@ -120,13 +137,44 @@ class PmsStore private constructor(context: Context) {
 
     init {
         if (dataFile.exists()) load() else migrateFromV1()
+        ensureShips()
+    }
+
+    /** Older versions had no ships: put everything into one ship. */
+    private fun ensureShips() {
+        if (ships.isEmpty()) ships += Ship(newId(), "My Ship")
+        val first = ships.first().id
+        var changed = false
+        // Top-level items without a ship go to the first ship; children follow their parent.
+        nodes.filter { it.parentId == null && ships.none { s -> s.id == it.shipId } }.forEach { it.shipId = first; changed = true }
+        repeat(50) {
+            nodes.filter { it.parentId != null }.forEach { n ->
+                val parentShip = node(n.parentId)?.shipId ?: first
+                if (n.shipId != parentShip) { n.shipId = parentShip; changed = true }
+            }
+        }
+        certs.forEach { c ->
+            val want = c.nodeId?.let { node(it)?.shipId } ?: c.shipId.takeIf { id -> ships.any { it.id == id } } ?: first
+            if (c.shipId != want) { c.shipId = want; changed = true }
+        }
+        if (changed || !dataFile.exists()) save()
     }
 
     // ---------- Persistence ----------
 
     private fun load() {
-        nodes.clear(); jobs.clear(); records.clear(); certs.clear()
+        ships.clear(); nodes.clear(); jobs.clear(); records.clear(); certs.clear()
         val root = JSONObject(dataFile.readText())
+        root.optJSONArray("ships")?.forEachObject { o ->
+            ships += Ship(
+                id = o.getString("id"),
+                name = o.getString("name"),
+                imo = o.optString("imo"),
+                locked = o.optBoolean("locked", false),
+                pinHash = o.optStringOrNull("pinHash"),
+                pinSalt = o.optStringOrNull("pinSalt"),
+            )
+        }
         root.optJSONArray("nodes")?.forEachObject { o ->
             nodes += Node(
                 id = o.getString("id"),
@@ -134,6 +182,7 @@ class PmsStore private constructor(context: Context) {
                 name = o.getString("name"),
                 runningHours = o.optLongOrNull("runningHours"),
                 hoursUpdated = o.optLongOrNull("hoursUpdated"),
+                shipId = o.optString("shipId"),
             )
         }
         root.optJSONArray("jobs")?.forEachObject { o ->
@@ -175,17 +224,25 @@ class PmsStore private constructor(context: Context) {
                 expiryDate = o.optLongOrNull("expiryDate"),
                 surveyDate = o.optLongOrNull("surveyDate"),
                 remarks = o.optString("remarks"),
+                shipId = o.optString("shipId"),
             )
         }
     }
 
     fun save() {
         val root = JSONObject()
-            .put("version", 2)
+            .put("version", 3)
+            .put("ships", JSONArray().apply {
+                ships.forEach {
+                    put(JSONObject().put("id", it.id).put("name", it.name).put("imo", it.imo)
+                        .put("locked", it.locked).put("pinHash", it.pinHash).put("pinSalt", it.pinSalt))
+                }
+            })
             .put("nodes", JSONArray().apply {
                 nodes.forEach {
                     put(JSONObject().put("id", it.id).put("parentId", it.parentId).put("name", it.name)
-                        .put("runningHours", it.runningHours).put("hoursUpdated", it.hoursUpdated))
+                        .put("runningHours", it.runningHours).put("hoursUpdated", it.hoursUpdated)
+                        .put("shipId", it.shipId))
                 }
             })
             .put("jobs", JSONArray().apply {
@@ -208,7 +265,8 @@ class PmsStore private constructor(context: Context) {
                 certs.forEach {
                     put(JSONObject().put("id", it.id).put("nodeId", it.nodeId).put("name", it.name)
                         .put("number", it.number).put("issuedBy", it.issuedBy).put("issueDate", it.issueDate)
-                        .put("expiryDate", it.expiryDate).put("surveyDate", it.surveyDate).put("remarks", it.remarks))
+                        .put("expiryDate", it.expiryDate).put("surveyDate", it.surveyDate).put("remarks", it.remarks)
+                        .put("shipId", it.shipId))
                 }
             })
         val tmp = File(dataFile.parentFile, "pms.json.tmp")
@@ -223,10 +281,11 @@ class PmsStore private constructor(context: Context) {
         val old = File(ctx.filesDir, "documents")
         val folders = old.listFiles { f -> f.isDirectory }?.sortedBy { it.name }.orEmpty()
             .filter { dir -> dir.listFiles { f -> f.name.endsWith(".pdf", true) }?.isNotEmpty() == true }
+        val ship = Ship(newId(), "My Ship").also { ships += it }
         if (folders.isNotEmpty()) {
-            val parent = addNode(null, "Imported documents", persist = false)
+            val parent = addNode(null, "Imported documents", ship.id, persist = false)
             folders.forEach { dir ->
-                val child = addNode(parent.id, dir.name, persist = false)
+                val child = addNode(parent.id, dir.name, ship.id, persist = false)
                 val target = File(docsRoot, child.id).apply { mkdirs() }
                 dir.listFiles { f -> f.name.endsWith(".pdf", true) }?.forEach { it.renameTo(File(target, it.name)) }
             }
@@ -236,19 +295,71 @@ class PmsStore private constructor(context: Context) {
 
     // ---------- Tree ----------
 
-    fun node(id: String?): Node? = id?.let { i -> nodes.firstOrNull { it.id == i } }
-    fun children(parentId: String?): List<Node> = nodes.filter { it.parentId == parentId }
+    // ---------- Ships ----------
 
-    fun addNode(parentId: String?, name: String, persist: Boolean = true): Node {
-        val n = Node(newId(), parentId, name.trim())
+    fun ship(id: String?): Ship? = id?.let { i -> ships.firstOrNull { it.id == i } }
+
+    fun addShip(name: String, imo: String = ""): Ship {
+        val s = Ship(newId(), name.trim(), imo.trim())
+        ships += s
+        save()
+        return s
+    }
+
+    /** Deletes a ship with everything recorded for it. */
+    fun deleteShip(id: String) {
+        nodes.filter { it.shipId == id && it.parentId == null }.forEach { deleteNode(it.id) }
+        certs.filter { it.shipId == id }.forEach { certDir(it.id).deleteRecursively() }
+        certs.removeAll { it.shipId == id }
+        ships.removeAll { it.id == id }
+        if (ships.isEmpty()) ships += Ship(newId(), "My Ship")
+        save()
+    }
+
+    private fun hash(salt: String, pin: String): String =
+        MessageDigest.getInstance("SHA-256").digest("$salt:$pin".toByteArray())
+            .joinToString("") { "%02x".format(it) }
+
+    fun lockShip(ship: Ship, pin: String?) {
+        ship.locked = true
+        if (pin.isNullOrEmpty()) {
+            ship.pinHash = null; ship.pinSalt = null
+        } else {
+            ship.pinSalt = newId()
+            ship.pinHash = hash(ship.pinSalt!!, pin)
+        }
+        save()
+    }
+
+    /** Returns false if the PIN is wrong. */
+    fun unlockShip(ship: Ship, pin: String?): Boolean {
+        val expected = ship.pinHash
+        if (expected != null && hash(ship.pinSalt.orEmpty(), pin.orEmpty()) != expected) return false
+        ship.locked = false
+        ship.pinHash = null; ship.pinSalt = null
+        save()
+        return true
+    }
+
+    // ---------- Tree ----------
+
+    fun node(id: String?): Node? = id?.let { i -> nodes.firstOrNull { it.id == i } }
+
+    /** Children of [parentId]; for the top level (parentId == null) only those of [shipId]. */
+    fun children(parentId: String?, shipId: String): List<Node> =
+        nodes.filter { it.parentId == parentId && (parentId != null || it.shipId == shipId) }
+
+    fun addNode(parentId: String?, name: String, shipId: String, persist: Boolean = true): Node {
+        val ship = node(parentId)?.shipId ?: shipId
+        val n = Node(newId(), parentId, name.trim(), shipId = ship)
         nodes += n
         if (persist) save()
         return n
     }
 
-    /** The node and everything below it. Null means the whole ship. */
-    fun subtreeIds(id: String?): Set<String> {
-        if (id == null) return nodes.map { it.id }.toSet()
+    /** The node and everything below it. Null means the whole of [shipId]. */
+    fun subtreeIds(id: String?, shipId: String): Set<String> {
+        if (id == null) return nodes.filter { it.shipId == shipId }.map { it.id }.toSet()
         val out = mutableSetOf(id)
         var frontier = listOf(id)
         while (frontier.isNotEmpty()) {
@@ -270,7 +381,7 @@ class PmsStore private constructor(context: Context) {
     }
 
     fun deleteNode(id: String) {
-        val ids = subtreeIds(id)
+        val ids = subtreeIds(id, "")
         records.filter { it.nodeId in ids }.forEach { photoDir(it.id).deleteRecursively() }
         certs.filter { it.nodeId in ids }.forEach { certDir(it.id).deleteRecursively() }
         nodes.removeAll { it.id in ids }
@@ -281,10 +392,10 @@ class PmsStore private constructor(context: Context) {
         save()
     }
 
-    fun seedExample() {
+    fun seedExample(shipId: String) {
         fun group(parent: String?, name: String, vararg kids: String): Node {
-            val n = addNode(parent, name, persist = false)
-            kids.forEach { addNode(n.id, it, persist = false) }
+            val n = addNode(parent, name, shipId, persist = false)
+            kids.forEach { addNode(n.id, it, shipId, persist = false) }
             return n
         }
         val er = group(null, "Engine Room")
@@ -361,9 +472,9 @@ class PmsStore private constructor(context: Context) {
     }
 
     /** Ids of nodes that have an overdue job anywhere below them (for the red dot in the tree). */
-    fun nodesWithOverdue(): Set<String> {
+    fun nodesWithOverdue(shipId: String): Set<String> {
         val out = mutableSetOf<String>()
-        jobs.filter { status(it) == JobStatus.OVERDUE }.forEach { job ->
+        jobs.filter { node(it.nodeId)?.shipId == shipId && status(it) == JobStatus.OVERDUE }.forEach { job ->
             var cur = node(job.nodeId)
             var guard = 0
             while (cur != null && guard++ < 50 && out.add(cur.id)) cur = node(cur.parentId)

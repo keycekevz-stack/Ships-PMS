@@ -21,6 +21,8 @@ data class TreeRow(
     val expanded: Boolean,
     val selected: Boolean,
     val overdue: Boolean,
+    /** Text for the top row (the ship's name). */
+    val label: String = "",
 )
 
 class TreeAdapter(
@@ -51,7 +53,7 @@ class TreeAdapter(
         h.indent.layoutParams = h.indent.layoutParams.apply { width = ((8 + row.depth * 18) * dp).toInt() }
 
         val node = row.node
-        h.name.text = node?.name ?: ctx.getString(R.string.whole_ship)
+        h.name.text = node?.name ?: row.label.ifEmpty { ctx.getString(R.string.whole_ship) }
         h.icon.setImageResource(if (node == null || row.hasChildren) R.drawable.ic_folder else R.drawable.ic_build)
         h.arrow.visibility = if (row.hasChildren) View.VISIBLE else View.INVISIBLE
         h.arrow.rotation = if (row.expanded) 90f else 0f

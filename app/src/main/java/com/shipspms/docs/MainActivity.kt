@@ -95,6 +95,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var progress: ProgressBar
     private lateinit var fab: ExtendedFloatingActionButton
 
+    private var shipId: String = ""
     private var selectedId: String? = null
     private val expanded = mutableSetOf<String>()
     private var tab = Tab.SCHEDULE
@@ -144,7 +145,7 @@ class MainActivity : AppCompatActivity() {
     private val openBackup = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) runIo("Backup restored", "Restore failed") {
             contentResolver.openInputStream(uri).use { input -> store.restore(requireNotNull(input)) }
-            withContext(Dispatchers.Main) { selectedId = null; expanded.clear() }
+            withContext(Dispatchers.Main) { selectedId = null; expanded.clear(); shipId = store.ships.first().id }
         }
     }
 
@@ -157,7 +158,8 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
         store = PmsStore.get(this)
 
-        selectedId = prefs.getString("selected", null)?.takeIf { store.node(it) != null }
+        shipId = prefs.getString("ship", null)?.takeIf { store.ship(it) != null } ?: store.ships.first().id
+        selectedId = prefs.getString("selected", null)?.takeIf { store.node(it)?.shipId == shipId }
         expanded += prefs.getStringSet("expanded", emptySet()).orEmpty()
         tab = Tab.entries.getOrElse(prefs.getInt("tab", Tab.SCHEDULE.ordinal)) { Tab.SCHEDULE }
 
@@ -175,7 +177,11 @@ class MainActivity : AppCompatActivity() {
         fab.setOnClickListener { onFab() }
 
         if (savedInstanceState == null) {
-            if (store.nodes.isEmpty() && !prefs.getBoolean("seed_asked", false)) askSeed()
+            if (store.nodes.isEmpty() && !prefs.getBoolean("seed_asked", false)) welcome()
+            else if (!prefs.getBoolean("ship_name_asked", false) && store.ships.size == 1 && ship().name == "My Ship") {
+                prefs.edit().putBoolean("ship_name_asked", true).apply()
+                editShip(ship(), firstTime = true)
+            }
             else if (selectedId == null) drawer?.openDrawer(GravityCompat.START)
             handleIncoming(intent)
         }
@@ -194,6 +200,7 @@ class MainActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         prefs.edit()
+            .putString("ship", shipId)
             .putString("selected", selectedId)
             .putStringSet("expanded", expanded.toSet())
             .putInt("tab", tab.ordinal)
@@ -226,10 +233,15 @@ class MainActivity : AppCompatActivity() {
                     createBackup.launch("ShipPMS-backup-$stamp.zip")
                 }
                 R.id.action_restore -> confirmRestore()
-                R.id.action_example -> { store.seedExample(); refresh(); drawer?.openDrawer(GravityCompat.START) }
+                R.id.action_example -> if (canEdit()) { store.seedExample(shipId); refresh(); drawer?.openDrawer(GravityCompat.START) }
+                R.id.action_ships -> showShips()
+                R.id.action_edit_ship -> if (canEdit()) editShip(ship())
+                R.id.action_lock -> if (ship().locked) unlockShip(ship()) else lockShip(ship())
+                R.id.action_delete_ship -> if (canEdit()) confirmDeleteShip(ship())
             }
             true
         }
+        toolbar.setOnClickListener { showShips() }
         drawer?.let { d ->
             toolbar.setNavigationIcon(R.drawable.ic_menu)
             toolbar.setNavigationContentDescription(R.string.ship_structure)
@@ -260,8 +272,9 @@ class MainActivity : AppCompatActivity() {
             itemAnimator = null
         }
         findViewById<View>(R.id.tree_add).setOnClickListener {
+            if (!canEdit()) return@setOnClickListener
             promptText("New main group", "", "e.g. Engine Room, Deck Machinery") { name ->
-                val n = store.addNode(null, name)
+                val n = store.addNode(null, name, shipId)
                 selectNode(n, closeDrawer = false)
             }
         }
@@ -287,8 +300,9 @@ class MainActivity : AppCompatActivity() {
                 when (payload) {
                     is Doc -> openFiles(listOf(payload.file), 0, payload.name)
                     is Job -> showJobDetails(payload)
-                    is WorkRecord -> showRecordDialog(payload.nodeId, store.jobs.firstOrNull { it.id == payload.jobId }, payload)
-                    is Certificate -> showCertDialog(payload, payload.nodeId)
+                    is WorkRecord -> if (ship().locked) showRecordDetails(payload)
+                        else showRecordDialog(payload.nodeId, store.jobs.firstOrNull { it.id == payload.jobId }, payload)
+                    is Certificate -> if (ship().locked) showCertDetails(payload) else showCertDialog(payload, payload.nodeId)
                 }
             },
             onMore = { payload, anchor ->
@@ -305,17 +319,21 @@ class MainActivity : AppCompatActivity() {
         list.adapter = rowAdapter
     }
 
+    private fun welcome() {
+        prefs.edit().putBoolean("seed_asked", true).putBoolean("ship_name_asked", true).apply()
+        editShip(ship(), firstTime = true) { askSeed() }
+    }
+
     private fun askSeed() {
-        prefs.edit().putBoolean("seed_asked", true).apply()
         MaterialAlertDialogBuilder(this)
-            .setTitle("Welcome to Ship PMS")
+            .setTitle("Set up ${ship().name}")
             .setMessage(
-                "Build your ship structure on the left: main groups (Engine Room), sub-groups (Main Engine) " +
+                "Build the ship structure on the left: main groups (Engine Room), sub-groups (Main Engine) " +
                     "and items (Fuel Pump). Then add documents, maintenance jobs, work done and certificates.\n\n" +
                     "Start with an example structure you can edit, or start empty?"
             )
             .setPositiveButton("Use example") { _, _ ->
-                store.seedExample(); refresh(); drawer?.openDrawer(GravityCompat.START)
+                store.seedExample(shipId); refresh(); drawer?.openDrawer(GravityCompat.START)
             }
             .setNegativeButton("Start empty") { _, _ -> drawer?.openDrawer(GravityCompat.START) }
             .show()
@@ -325,16 +343,32 @@ class MainActivity : AppCompatActivity() {
     // Refresh
     // =====================================================================
 
+    private fun ship(): Ship = store.ship(shipId) ?: store.ships.first().also { shipId = it.id }
+
     private fun refresh() {
-        if (selectedId != null && store.node(selectedId) == null) selectedId = null
-        refreshTree(); refreshHeader(); refreshChips(); refreshFab(); refreshList()
+        if (selectedId != null && store.node(selectedId)?.shipId != ship().id) selectedId = null
+        refreshShip(); refreshTree(); refreshHeader(); refreshChips(); refreshFab(); refreshList()
+    }
+
+    private fun refreshShip() {
+        val s = ship()
+        toolbar.title = (if (s.locked) "🔒 " else "") + s.name + "  ▾"
+        toolbar.subtitle = listOfNotNull(
+            s.imo.takeIf { it.isNotBlank() }?.let { "IMO $it" },
+            if (s.locked) "Locked – read only" else null,
+            if (store.ships.size > 1) "${store.ships.size} ships" else null,
+        ).joinToString(" · ").ifEmpty { null }
+        toolbar.menu.findItem(R.id.action_lock)?.title = if (s.locked) "Unlock this ship" else "Lock this ship"
     }
 
     private fun refreshTree() {
-        val overdue = store.nodesWithOverdue()
-        val rows = mutableListOf(TreeRow(null, 0, false, false, selectedId == null, overdue.isNotEmpty()))
+        val overdue = store.nodesWithOverdue(shipId)
+        val s = ship()
+        val rows = mutableListOf(
+            TreeRow(null, 0, false, false, selectedId == null, overdue.isNotEmpty(), (if (s.locked) "🔒 " else "") + s.name)
+        )
         fun add(parentId: String?, depth: Int) {
-            store.children(parentId).forEach { n ->
+            store.children(parentId, shipId).forEach { n ->
                 val hasKids = store.nodes.any { it.parentId == n.id }
                 val open = n.id in expanded
                 rows += TreeRow(n, depth, hasKids, open, n.id == selectedId, n.id in overdue)
@@ -346,14 +380,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun certsInScope(): List<Certificate> {
-        if (selectedId == null) return store.certs
-        val ids = store.subtreeIds(selectedId)
+        if (selectedId == null) return store.certs.filter { it.shipId == shipId }
+        val ids = store.subtreeIds(selectedId, shipId)
         return store.certs.filter { it.nodeId in ids }
     }
 
     private fun refreshHeader() {
         val node = store.node(selectedId)
-        val ids = store.subtreeIds(selectedId)
+        val ids = store.subtreeIds(selectedId, shipId)
         val jobs = store.jobs.filter { it.nodeId in ids }
         val overdue = jobs.count { store.status(it) == JobStatus.OVERDUE }
         val soon = jobs.count { store.status(it) == JobStatus.DUE_SOON }
@@ -362,10 +396,10 @@ class MainActivity : AppCompatActivity() {
             store.certStatus(it).let { s -> s == CertStatus.EXPIRED || s == CertStatus.SURVEY_OVERDUE }
         }
 
-        headerPath.text = if (node == null) getString(R.string.whole_ship) else store.path(node.id)
+        headerPath.text = if (node == null) ship().name else ship().name + " › " + store.path(node.id)
         val parts = mutableListOf<String>()
         if (node == null) {
-            parts += "${store.nodes.size} items"
+            parts += "${ids.size} items"
         } else if (node.runningHours != null) {
             parts += "${numFmt.format(node.runningHours)} running hours" +
                 (node.hoursUpdated?.let { " (${dateFmt.format(Date(it))})" } ?: "")
@@ -375,7 +409,9 @@ class MainActivity : AppCompatActivity() {
         if (soon > 0) parts += "$soon due soon"
         if (certAlerts > 0) parts += "$certAlerts certificate alerts"
         headerInfo.text = parts.joinToString(" · ")
-        headerHours.visibility = if (node == null) View.GONE else View.VISIBLE
+        headerHours.visibility = if (node == null || ship().locked) View.GONE else View.VISIBLE
+        if (ship().locked) parts.add(0, "🔒 Locked")
+        headerInfo.text = parts.joinToString(" · ")
 
         tabs.getTabAt(Tab.SCHEDULE.ordinal)?.orCreateBadge?.apply { isVisible = overdue > 0; number = overdue }
         tabs.getTabAt(Tab.CERTS.ordinal)?.orCreateBadge?.apply { isVisible = certBad > 0; number = certBad }
@@ -444,6 +480,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun refreshFab() {
+        fab.visibility = if (ship().locked) View.GONE else View.VISIBLE
         fab.text = when (tab) {
             Tab.DOCS -> getString(R.string.upload_pdf)
             Tab.SCHEDULE -> getString(R.string.add_job)
@@ -472,7 +509,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun refreshList() {
-        val ids = store.subtreeIds(selectedId)
+        val ids = store.subtreeIds(selectedId, shipId)
         val items: List<RowItem> = when (tab) {
             Tab.DOCS -> store.docs(ids)
                 .filter { matches(it.name, store.path(it.nodeId)) }
@@ -581,7 +618,7 @@ class MainActivity : AppCompatActivity() {
 
         empty.visibility = if (items.isEmpty()) View.VISIBLE else View.GONE
         empty.text = when {
-            store.nodes.isEmpty() && tab != Tab.CERTS -> "Start by adding your machinery in the Ship structure (☰ menu, top left)."
+            store.subtreeIds(null, shipId).isEmpty() && tab != Tab.CERTS -> "Start by adding your machinery in the Ship structure (☰ menu, top left)."
             query.isNotEmpty() -> "Nothing matches “$query”."
             tab == Tab.DOCS -> "No documents here yet.\nTap “Upload PDF” to add manuals, drawings or certificates."
             tab == Tab.SCHEDULE && (dueFilter != DueFilter.ALL || typeFilter != TypeFilter.OPEN) -> "No jobs in this list. 👍"
@@ -656,6 +693,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showNodeMenu(node: Node, anchor: View) {
+        if (!canEdit()) return
         PopupMenu(this, anchor).apply {
             menu.add(0, 1, 0, "Add sub-item")
             menu.add(0, 2, 1, "Rename")
@@ -664,7 +702,7 @@ class MainActivity : AppCompatActivity() {
             setOnMenuItemClickListener { item ->
                 when (item.itemId) {
                     1 -> promptText("Add under “${node.name}”", "", "e.g. Main Engine, Fuel Pump No.1") { name ->
-                        store.addNode(node.id, name)
+                        store.addNode(node.id, name, shipId)
                         expanded += node.id
                         refresh()
                     }
@@ -681,6 +719,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun editRunningHours(node: Node) {
+        if (!canEdit()) return
         promptText(
             "Running hours – ${node.name}", node.runningHours?.toString().orEmpty(),
             "Current counter reading", InputType.TYPE_CLASS_NUMBER, allowEmpty = true,
@@ -692,7 +731,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun confirmDeleteNode(node: Node) {
-        val ids = store.subtreeIds(node.id)
+        val ids = store.subtreeIds(node.id, shipId)
         val sub = ids.size - 1
         val jobs = store.jobs.count { it.nodeId in ids }
         val recs = store.records.count { it.nodeId in ids }
@@ -715,7 +754,7 @@ class MainActivity : AppCompatActivity() {
         val sel = selectedId
         when {
             sel != null -> action(sel)
-            store.nodes.isEmpty() -> MaterialAlertDialogBuilder(this)
+            store.subtreeIds(null, shipId).isEmpty() -> MaterialAlertDialogBuilder(this)
                 .setMessage("First add your machinery in the Ship structure on the left.")
                 .setPositiveButton(R.string.ok) { _, _ -> drawer?.openDrawer(GravityCompat.START) }
                 .show()
@@ -726,7 +765,7 @@ class MainActivity : AppCompatActivity() {
     private fun chooseNode(title: String, action: (String) -> Unit) {
         val ordered = mutableListOf<Pair<Node, Int>>()
         fun walk(parent: String?, depth: Int) {
-            store.children(parent).forEach { ordered += it to depth; walk(it.id, depth + 1) }
+            store.children(parent, shipId).forEach { ordered += it to depth; walk(it.id, depth + 1) }
         }
         walk(null, 0)
         val labels = ordered.map { (n, d) -> " ".repeat(d) + n.name }.toTypedArray()
@@ -738,6 +777,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun onFab() {
+        if (!canEdit()) return
         when (tab) {
             Tab.DOCS -> withItem("Upload to which item?") { id ->
                 pendingImportNode = id
@@ -760,7 +800,7 @@ class MainActivity : AppCompatActivity() {
             .setMessage(store.path(job.nodeId) + "\n" + describeJob(job) +
                 if (job.instructions.isNotBlank()) "\n\n${job.instructions}" else "")
             .setPositiveButton(if (done) "Reopen" else "✔ Record work done") { _, _ ->
-                if (done) reopen(job) else showRecordDialog(job.nodeId, job, null)
+                if (canEdit()) { if (done) reopen(job) else showRecordDialog(job.nodeId, job, null) }
             }
             .setNeutralButton("More…") { _, _ -> showJobMenu(job) }
             .setNegativeButton("Close", null)
@@ -779,6 +819,7 @@ class MainActivity : AppCompatActivity() {
         MaterialAlertDialogBuilder(this)
             .setTitle(job.title)
             .setItems(options) { _, which ->
+                if (which != 2 && !canEdit()) return@setItems
                 when (which) {
                     0 -> if (done) reopen(job) else showRecordDialog(job.nodeId, job, null)
                     1 -> showJobDialog(job, job.nodeId)
@@ -892,6 +933,7 @@ class MainActivity : AppCompatActivity() {
             menu.add(0, 1, 1, "Edit")
             menu.add(0, 2, 2, "Delete")
             setOnMenuItemClickListener { item ->
+                if (item.itemId != 3 && !canEdit()) return@setOnMenuItemClickListener true
                 when (item.itemId) {
                     3 -> openFiles(photos, 0, rec.title)
                     1 -> showRecordDialog(rec.nodeId, store.jobs.firstOrNull { it.id == rec.jobId }, rec)
@@ -989,6 +1031,7 @@ class MainActivity : AppCompatActivity() {
             menu.add(0, 1, 1, "Edit")
             menu.add(0, 2, 2, "Delete")
             setOnMenuItemClickListener { item ->
+                if (item.itemId != 3 && !canEdit()) return@setOnMenuItemClickListener true
                 when (item.itemId) {
                     3 -> openFiles(files, 0, c.name)
                     1 -> showCertDialog(c, c.nodeId)
@@ -1008,7 +1051,7 @@ class MainActivity : AppCompatActivity() {
     private fun showCertDialog(existing: Certificate?, nodeId: String?) {
         val v = layoutInflater.inflate(R.layout.dialog_cert, null)
         v.findViewById<TextView>(R.id.item_path).text =
-            if (nodeId == null) "Ship certificate (whole ship)" else "Equipment certificate: " + store.path(nodeId)
+            if (nodeId == null) "Ship certificate – ${ship().name}" else "Equipment certificate: " + store.path(nodeId)
         val nameLayout = v.findViewById<TextInputLayout>(R.id.cert_name_layout)
         val name = v.findViewById<TextInputEditText>(R.id.cert_name)
         val number = v.findViewById<TextInputEditText>(R.id.cert_number)
@@ -1049,7 +1092,7 @@ class MainActivity : AppCompatActivity() {
                 files.commit()
                 store.upsertCert(
                     Certificate(
-                        id = certId, nodeId = nodeId, name = n,
+                        id = certId, nodeId = nodeId, name = n, shipId = shipId,
                         number = number.text.toString().trim(),
                         issuedBy = issuedBy.text.toString().trim(),
                         issueDate = issue, expiryDate = expiry, surveyDate = survey,
@@ -1062,6 +1105,210 @@ class MainActivity : AppCompatActivity() {
         }
         dialog.show()
         if (existing == null) name.requestFocus()
+    }
+
+    // =====================================================================
+    // Ships & locking
+    // =====================================================================
+
+    /** Returns true if the current ship can be changed; otherwise explains that it is locked. */
+    private fun canEdit(): Boolean {
+        val s = ship()
+        if (!s.locked) return true
+        MaterialAlertDialogBuilder(this)
+            .setTitle("🔒 ${s.name} is locked")
+            .setMessage("The records of this vessel are read-only. You can still view and share them.\n\nUnlock the ship to make changes.")
+            .setPositiveButton("Unlock") { _, _ -> unlockShip(s) }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+        return false
+    }
+
+    private fun switchShip(id: String) {
+        if (id == shipId) return
+        shipId = id
+        selectedId = null
+        historyJobId = null
+        refresh()
+        toast("Now showing ${ship().name}")
+    }
+
+    private fun showShips() {
+        val ships = store.ships.sortedBy { it.name.lowercase() }
+        val labels = ships.map { s ->
+            (if (s.locked) "🔒 " else "") + s.name + (if (s.id == shipId) "  ✓" else "")
+        }.toTypedArray()
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Ships")
+            .setItems(labels) { _, i -> switchShip(ships[i].id) }
+            .setPositiveButton("Add ship") { _, _ ->
+                editShip(null) { askSeed() }
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    /** Add (existing == null) or rename a ship. */
+    private fun editShip(existing: Ship?, firstTime: Boolean = false, after: () -> Unit = {}) {
+        val pad = (20 * resources.displayMetrics.density).toInt()
+        val name = EditText(this).apply {
+            hint = "Ship name (e.g. MV Ocean Star)"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_WORDS
+            isSingleLine = true
+            setText(existing?.name?.takeIf { !(firstTime && it == "My Ship") })
+        }
+        val imo = EditText(this).apply {
+            hint = "IMO number (optional)"
+            inputType = InputType.TYPE_CLASS_NUMBER
+            isSingleLine = true
+            setText(existing?.imo)
+        }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad / 2, pad, 0)
+            addView(name); addView(imo)
+        }
+        val dialog = MaterialAlertDialogBuilder(this)
+            .setTitle(when {
+                firstTime -> "Welcome to Ship PMS – which ship?"
+                existing == null -> "Add ship"
+                else -> "Edit ship"
+            })
+            .setView(box)
+            .setPositiveButton(R.string.save, null)
+            .setNegativeButton(if (firstTime) "Later" else getString(R.string.cancel)) { _, _ -> if (firstTime) after() }
+            .setCancelable(!firstTime)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val n = name.text.toString().trim()
+                if (n.isEmpty()) { name.error = "Enter the ship name"; return@setOnClickListener }
+                if (existing == null) {
+                    val s = store.addShip(n, imo.text.toString())
+                    shipId = s.id; selectedId = null
+                } else {
+                    existing.name = n
+                    existing.imo = imo.text.toString().trim()
+                    store.save()
+                }
+                dialog.dismiss()
+                refresh()
+                after()
+            }
+        }
+        dialog.show()
+        name.requestFocus()
+    }
+
+    private fun lockShip(s: Ship) {
+        val pad = (20 * resources.displayMetrics.density).toInt()
+        val pin = EditText(this).apply {
+            hint = "PIN to unlock (optional, 4+ digits)"
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
+            isSingleLine = true
+        }
+        val box = FrameLayout(this).apply { setPadding(pad, pad / 2, pad, 0); addView(pin) }
+        val dialog = MaterialAlertDialogBuilder(this)
+            .setTitle("Lock ${s.name}?")
+            .setMessage(
+                "Use this when you sign off. All records of this vessel – structure, jobs, work done, photos, " +
+                    "certificates and documents – become read-only. They can still be viewed and shared.\n\n" +
+                    "Set a PIN if only you should be able to unlock it."
+            )
+            .setView(box)
+            .setPositiveButton("Lock", null)
+            .setNegativeButton(R.string.cancel, null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val p = pin.text.toString()
+                if (p.isNotEmpty() && p.length < 4) { pin.error = "Use at least 4 digits, or leave empty"; return@setOnClickListener }
+                store.lockShip(s, p.ifEmpty { null })
+                dialog.dismiss()
+                refresh()
+                toast("🔒 ${s.name} locked" + if (p.isNotEmpty()) " with PIN" else "")
+            }
+        }
+        dialog.show()
+    }
+
+    private fun unlockShip(s: Ship) {
+        if (s.pinHash == null) {
+            MaterialAlertDialogBuilder(this)
+                .setTitle("Unlock ${s.name}?")
+                .setMessage("Its records can be changed again.")
+                .setPositiveButton("Unlock") { _, _ -> store.unlockShip(s, null); refresh() }
+                .setNegativeButton(R.string.cancel, null)
+                .show()
+            return
+        }
+        promptText("Enter PIN to unlock ${s.name}", "", "PIN",
+            InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD) { p ->
+            if (store.unlockShip(s, p)) { refresh(); toast("${s.name} unlocked") } else toast("Wrong PIN")
+        }
+    }
+
+    private fun confirmDeleteShip(s: Ship) {
+        val ids = store.subtreeIds(null, s.id)
+        val jobs = store.jobs.count { it.nodeId in ids }
+        val recs = store.records.count { it.nodeId in ids }
+        val certs = store.certs.count { it.shipId == s.id }
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Delete ship “${s.name}”?")
+            .setMessage(
+                "This permanently deletes its ${ids.size} structure items, $jobs jobs, $recs work records (with photos), " +
+                    "$certs certificates and all its documents.\n\nTip: make a backup first (⋮ → Backup to file)."
+            )
+            .setPositiveButton("Delete ship") { _, _ ->
+                promptText("Type the ship name to confirm", "", s.name) { typed ->
+                    if (typed.equals(s.name, ignoreCase = true)) {
+                        store.deleteShip(s.id)
+                        shipId = store.ships.first().id
+                        selectedId = null
+                        refresh()
+                        toast("Ship deleted")
+                    } else toast("Name did not match – nothing deleted")
+                }
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    /** Read-only view of a work record (used when the ship is locked). */
+    private fun showRecordDetails(r: WorkRecord) {
+        val photos = store.photos(r.id)
+        val msg = listOfNotNull(
+            store.path(r.nodeId),
+            dateFmt.format(Date(r.date)),
+            r.doneBy.takeIf { it.isNotBlank() }?.let { "Done by $it" },
+            r.hours?.let { "At ${numFmt.format(it)} running hours" },
+            r.remarks.takeIf { it.isNotBlank() },
+        ).joinToString("\n")
+        MaterialAlertDialogBuilder(this)
+            .setTitle(r.title)
+            .setMessage(msg)
+            .apply { if (photos.isNotEmpty()) setPositiveButton("Photos (${photos.size})") { _, _ -> openFiles(photos, 0, r.title) } }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    /** Read-only view of a certificate (used when the ship is locked). */
+    private fun showCertDetails(c: Certificate) {
+        val files = store.certFiles(c.id)
+        val msg = listOfNotNull(
+            if (c.nodeId == null) "Ship certificate" else store.path(c.nodeId),
+            c.number.takeIf { it.isNotBlank() }?.let { "No. $it" },
+            c.issuedBy.takeIf { it.isNotBlank() }?.let { "Issued by $it" },
+            c.issueDate?.let { "Issued ${dateFmt.format(Date(it))}" },
+            describeCert(c),
+            c.remarks.takeIf { it.isNotBlank() },
+        ).joinToString("\n")
+        MaterialAlertDialogBuilder(this)
+            .setTitle(c.name)
+            .setMessage(msg)
+            .apply { if (files.isNotEmpty()) setPositiveButton("View files (${files.size})") { _, _ -> openFiles(files, 0, c.name) } }
+            .setNegativeButton("Close", null)
+            .show()
     }
 
     // =====================================================================
@@ -1212,6 +1459,7 @@ class MainActivity : AppCompatActivity() {
             menu.add(0, 4, 3, "Move to another item")
             menu.add(0, 5, 4, R.string.delete)
             setOnMenuItemClickListener { item ->
+                if (item.itemId >= 3 && !canEdit()) return@setOnMenuItemClickListener true
                 when (item.itemId) {
                     1 -> shareFile(this@MainActivity, doc.file)
                     2 -> openWithOtherApp(this@MainActivity, doc.file)
@@ -1244,9 +1492,9 @@ class MainActivity : AppCompatActivity() {
             else -> emptyList()
         }
         intent.action = Intent.ACTION_MAIN
-        if (uris.isEmpty()) return
+        if (uris.isEmpty() || !canEdit()) return
         tabs.getTabAt(Tab.DOCS.ordinal)?.select()
-        if (store.nodes.isEmpty()) store.addNode(null, "General documents")
+        if (store.subtreeIds(null, shipId).isEmpty()) store.addNode(null, "General documents", shipId)
         chooseNode("Save ${uris.size} PDF${if (uris.size > 1) "s" else ""} to") { id -> importAll(uris, id) }
     }
 
@@ -1278,7 +1526,7 @@ class MainActivity : AppCompatActivity() {
             else -> emptyList()
         } + listOfNotNull(query.takeIf { it.isNotEmpty() }?.let { "“$it”" })
         val text = buildString {
-            append("Ship PMS – ${tab.label} – ${headerPath.text}\n")
+            append("${tab.label} – ${headerPath.text}\n")
             if (filters.isNotEmpty()) append(filters.joinToString(" · ")).append('\n')
             append(dateFmt.format(Date())).append(" · ${items.size} entries\n\n")
             items.forEachIndexed { i, it ->
