@@ -3,5 +3,6 @@
     <files-path name="docs" path="pms_docs/" />
     <files-path name="photos" path="pms_photos/" />
     <files-path name="certs" path="pms_certs/" />
+    <files-path name="parts" path="pms_parts/" />
     <cache-path name="camera" path="camera/" />
 </paths>

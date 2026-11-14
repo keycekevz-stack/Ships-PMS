@@ -10,6 +10,7 @@
     <string name="tab_history">Work done</string>
     <string name="tab_certs">Certificates</string>
     <string name="add_cert">Add certificate</string>
+    <string name="add_part">Add spare part</string>
     <string name="upload_pdf">Upload PDF</string>
     <string name="add_job">Add job</string>
     <string name="log_work">Log work</string>

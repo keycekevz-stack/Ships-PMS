@@ -25,6 +25,7 @@ The top row of the tree is the ship's name. Select any level of the tree. The fo
 | **Schedule** | Maintenance jobs, sorted by the next due date. Two rows of filters (see below) |
 | **Work done** | History of work carried out: date, who did it, running hours, remarks and **photos** |
 | **Certificates** | Ship and equipment certificates, with expiry and annual survey dates and a scan or photo |
+| **Spare parts** | Spare parts inventory: stock, minimum level and store location, linked to the units they fit |
 
 ## Schedule filters
 - **Type:** All open jobs · Recurring · One-time · Completed one-time
@@ -42,6 +43,14 @@ Running-hours jobs are placed in the "due by" lists assuming the machinery runs 
 - *Log work* records unplanned or corrective work.
 - **At least one photo is required** before a work report can be saved (camera or gallery). Photos are resized to save space.
 - Each item can keep a running-hours counter. Tap **Hours** in the header to update it.
+
+## Spare parts inventory
+- Each part has a name, part number, maker/drawing ref., store location, quantity in stock, minimum stock, unit and optional photos.
+- **Link a part to one or more units**. For example, the same fuel filter can be linked to Generators No.1, No.2 and No.3. Select a unit in the tree to see only its parts. Select the ship to see all parts.
+- Filters: All · Low stock (at or below minimum) · Out of stock · Not linked to a unit. Search by name, part number, maker, location or unit.
+- **− Take out / + Receive** updates the stock, and each change is kept in the part's **stock history**.
+- **Work reports can list the spare parts used.** Saving the report takes them out of stock automatically. Editing or deleting the report puts them back.
+- Deleting a unit only removes its links. The parts stay in the inventory.
 
 ## Certificates
 Name, number, issued by, issue date, expiry date and next annual survey/endorsement date. You can attach a PDF scan or photos.

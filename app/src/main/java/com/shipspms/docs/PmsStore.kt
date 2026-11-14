@@ -25,6 +25,34 @@ enum class IntervalUnit(val label: String, val short: String) {
 
 enum class JobStatus { OVERDUE, DUE_SOON, OK, DONE }
 enum class CertStatus { EXPIRED, SURVEY_OVERDUE, DUE_SOON, OK }
+enum class PartStatus { OUT, LOW, OK }
+
+/** A spare part in the ship's store. It can be linked to several units (nodeIds). Photos in files/pms_parts/<id>/. */
+data class SparePart(
+    val id: String,
+    var shipId: String,
+    var name: String,
+    var partNumber: String,
+    var maker: String,
+    var location: String,
+    var quantity: Int,
+    var minQuantity: Int,
+    var unit: String,
+    var remarks: String,
+    val nodeIds: MutableSet<String> = mutableSetOf(),
+)
+
+/** A change in stock: negative = taken out / used, positive = received. */
+data class StockMove(
+    val id: String,
+    val partId: String,
+    val date: Long,
+    val delta: Int,
+    val note: String,
+)
+
+/** A spare part used in a work record. */
+data class PartUse(val partId: String, val qty: Int)
 
 /**
  * A vessel. Each ship has its own structure, jobs, work records and certificates.
@@ -78,6 +106,7 @@ data class WorkRecord(
     var doneBy: String,
     var hours: Long?,
     var remarks: String,
+    var partsUsed: List<PartUse> = emptyList(),
 )
 
 /** A ship or equipment certificate. nodeId == null means a ship certificate. Files in files/pms_certs/<id>/. */
@@ -112,12 +141,15 @@ class PmsStore private constructor(context: Context) {
     private val docsRoot = File(ctx.filesDir, "pms_docs")
     private val photosRoot = File(ctx.filesDir, "pms_photos")
     private val certsRoot = File(ctx.filesDir, "pms_certs")
+    private val partsRoot = File(ctx.filesDir, "pms_parts")
 
     val ships = mutableListOf<Ship>()
     val nodes = mutableListOf<Node>()
     val jobs = mutableListOf<Job>()
     val records = mutableListOf<WorkRecord>()
     val certs = mutableListOf<Certificate>()
+    val parts = mutableListOf<SparePart>()
+    val moves = mutableListOf<StockMove>()
 
     companion object {
         @Volatile private var instance: PmsStore? = null
@@ -153,6 +185,7 @@ class PmsStore private constructor(context: Context) {
                 if (n.shipId != parentShip) { n.shipId = parentShip; changed = true }
             }
         }
+        parts.filter { p -> ships.none { it.id == p.shipId } }.forEach { it.shipId = first; changed = true }
         certs.forEach { c ->
             val want = c.nodeId?.let { node(it)?.shipId } ?: c.shipId.takeIf { id -> ships.any { it.id == id } } ?: first
             if (c.shipId != want) { c.shipId = want; changed = true }
@@ -163,7 +196,7 @@ class PmsStore private constructor(context: Context) {
     // ---------- Persistence ----------
 
     private fun load() {
-        ships.clear(); nodes.clear(); jobs.clear(); records.clear(); certs.clear()
+        ships.clear(); nodes.clear(); jobs.clear(); records.clear(); certs.clear(); parts.clear(); moves.clear()
         val root = JSONObject(dataFile.readText())
         root.optJSONArray("ships")?.forEachObject { o ->
             ships += Ship(
@@ -211,7 +244,29 @@ class PmsStore private constructor(context: Context) {
                 doneBy = o.optString("doneBy"),
                 hours = o.optLongOrNull("hours"),
                 remarks = o.optString("remarks"),
+                partsUsed = o.optJSONArray("partsUsed")?.let { a ->
+                    (0 until a.length()).map { i -> a.getJSONObject(i).let { u -> PartUse(u.getString("partId"), u.getInt("qty")) } }
+                }.orEmpty(),
             )
+        }
+        root.optJSONArray("parts")?.forEachObject { o ->
+            parts += SparePart(
+                id = o.getString("id"),
+                shipId = o.optString("shipId"),
+                name = o.getString("name"),
+                partNumber = o.optString("partNumber"),
+                maker = o.optString("maker"),
+                location = o.optString("location"),
+                quantity = o.optInt("quantity", 0),
+                minQuantity = o.optInt("minQuantity", 0),
+                unit = o.optString("unit", "pcs"),
+                remarks = o.optString("remarks"),
+                nodeIds = o.optJSONArray("nodeIds")?.let { a -> (0 until a.length()).map { a.getString(it) }.toMutableSet() }
+                    ?: mutableSetOf(),
+            )
+        }
+        root.optJSONArray("moves")?.forEachObject { o ->
+            moves += StockMove(o.getString("id"), o.getString("partId"), o.getLong("date"), o.getInt("delta"), o.optString("note"))
         }
         root.optJSONArray("certs")?.forEachObject { o ->
             certs += Certificate(
@@ -258,7 +313,24 @@ class PmsStore private constructor(context: Context) {
                 records.forEach {
                     put(JSONObject().put("id", it.id).put("nodeId", it.nodeId).put("jobId", it.jobId)
                         .put("title", it.title).put("date", it.date).put("doneBy", it.doneBy)
-                        .put("hours", it.hours).put("remarks", it.remarks))
+                        .put("hours", it.hours).put("remarks", it.remarks)
+                        .put("partsUsed", JSONArray().apply {
+                            it.partsUsed.forEach { u -> put(JSONObject().put("partId", u.partId).put("qty", u.qty)) }
+                        }))
+                }
+            })
+            .put("parts", JSONArray().apply {
+                parts.forEach {
+                    put(JSONObject().put("id", it.id).put("shipId", it.shipId).put("name", it.name)
+                        .put("partNumber", it.partNumber).put("maker", it.maker).put("location", it.location)
+                        .put("quantity", it.quantity).put("minQuantity", it.minQuantity).put("unit", it.unit)
+                        .put("remarks", it.remarks).put("nodeIds", JSONArray(it.nodeIds.toList())))
+                }
+            })
+            .put("moves", JSONArray().apply {
+                moves.forEach {
+                    put(JSONObject().put("id", it.id).put("partId", it.partId).put("date", it.date)
+                        .put("delta", it.delta).put("note", it.note))
                 }
             })
             .put("certs", JSONArray().apply {
@@ -310,6 +382,8 @@ class PmsStore private constructor(context: Context) {
     fun deleteShip(id: String) {
         nodes.filter { it.shipId == id && it.parentId == null }.forEach { deleteNode(it.id) }
         certs.filter { it.shipId == id }.forEach { certDir(it.id).deleteRecursively() }
+        parts.filter { it.shipId == id }.forEach { p -> partDir(p.id).deleteRecursively(); moves.removeAll { it.partId == p.id } }
+        parts.removeAll { it.shipId == id }
         certs.removeAll { it.shipId == id }
         ships.removeAll { it.id == id }
         if (ships.isEmpty()) ships += Ship(newId(), "My Ship")
@@ -388,6 +462,7 @@ class PmsStore private constructor(context: Context) {
         jobs.removeAll { it.nodeId in ids }
         records.removeAll { it.nodeId in ids }
         certs.removeAll { it.nodeId in ids }
+        parts.forEach { it.nodeIds.removeAll(ids) } // the parts stay in the store, only the links go
         ids.forEach { File(docsRoot, it).deleteRecursively() }
         save()
     }
@@ -498,6 +573,8 @@ class PmsStore private constructor(context: Context) {
      * a one-time job is marked completed.
      */
     fun upsertRecord(rec: WorkRecord) {
+        val old = records.firstOrNull { it.id == rec.id }?.partsUsed.orEmpty()
+        applyPartUse(old, rec.partsUsed, "Used: ${rec.title}")
         val i = records.indexOfFirst { it.id == rec.id }
         if (i >= 0) records[i] = rec else records += rec
         rec.jobId?.let { syncJobFromRecords(it) }
@@ -512,6 +589,7 @@ class PmsStore private constructor(context: Context) {
     }
 
     fun deleteRecord(rec: WorkRecord) {
+        applyPartUse(rec.partsUsed, emptyList(), "Returned (work record deleted): ${rec.title}")
         records.removeAll { it.id == rec.id }
         photoDir(rec.id).deleteRecursively()
         rec.jobId?.let { syncJobFromRecords(it) }
@@ -530,6 +608,63 @@ class PmsStore private constructor(context: Context) {
             job.completed = latest?.date
         }
     }
+
+    /** Takes the difference between the old and new parts used out of (or back into) stock. */
+    private fun applyPartUse(old: List<PartUse>, new: List<PartUse>, note: String) {
+        val ids = (old.map { it.partId } + new.map { it.partId }).toSet()
+        ids.forEach { pid ->
+            val delta = old.filter { it.partId == pid }.sumOf { it.qty } - new.filter { it.partId == pid }.sumOf { it.qty }
+            val part = parts.firstOrNull { it.id == pid } ?: return@forEach
+            if (delta != 0) {
+                part.quantity += delta
+                moves += StockMove(newId(), pid, System.currentTimeMillis(), delta, note)
+            }
+        }
+    }
+
+    // ---------- Spare parts ----------
+
+    fun part(id: String?): SparePart? = id?.let { i -> parts.firstOrNull { it.id == i } }
+
+    fun partDir(partId: String) = File(partsRoot, partId)
+
+    fun partFiles(partId: String): List<File> =
+        partDir(partId).listFiles { f -> f.isFile }?.sortedBy { it.name }.orEmpty()
+
+    fun partStatus(p: SparePart): PartStatus = when {
+        p.quantity <= 0 -> PartStatus.OUT
+        p.minQuantity > 0 && p.quantity <= p.minQuantity -> PartStatus.LOW
+        else -> PartStatus.OK
+    }
+
+    fun upsertPart(p: SparePart) {
+        val i = parts.indexOfFirst { it.id == p.id }
+        if (i >= 0) {
+            val before = parts[i].quantity
+            parts[i] = p
+            if (p.quantity != before) moves += StockMove(newId(), p.id, System.currentTimeMillis(), p.quantity - before, "Stock corrected")
+        } else {
+            parts += p
+            if (p.quantity != 0) moves += StockMove(newId(), p.id, System.currentTimeMillis(), p.quantity, "Initial stock")
+        }
+        save()
+    }
+
+    fun adjustStock(p: SparePart, delta: Int, note: String) {
+        p.quantity += delta
+        moves += StockMove(newId(), p.id, System.currentTimeMillis(), delta, note)
+        save()
+    }
+
+    fun deletePart(p: SparePart) {
+        parts.removeAll { it.id == p.id }
+        moves.removeAll { it.partId == p.id }
+        partDir(p.id).deleteRecursively()
+        save()
+    }
+
+    /** Names of the units a part is linked to. */
+    fun partUnits(p: SparePart): List<String> = p.nodeIds.mapNotNull { node(it)?.name }.sorted()
 
     // ---------- Photos of work done ----------
 
@@ -641,7 +776,7 @@ class PmsStore private constructor(context: Context) {
 
     // ---------- Backup ----------
 
-    private fun fileRoots() = mapOf("docs" to docsRoot, "photos" to photosRoot, "certs" to certsRoot)
+    private fun fileRoots() = mapOf("docs" to docsRoot, "photos" to photosRoot, "certs" to certsRoot, "parts" to partsRoot)
 
     /** Writes pms.json plus every document, photo and certificate scan into one zip file. */
     fun backup(out: OutputStream) {
