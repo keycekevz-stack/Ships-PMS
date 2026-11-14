@@ -4,17 +4,20 @@ An offline app for machinery manuals, photos, and maintenance records.
 It works on Android and iPhone, and no Xcode or app store is needed.
 
 ## What it does
-- A list of machines with maker, model, serial no., location, and running hours
+- A **tree** of items, nested as deep as you need. Example: Engine Room → Main Engine → Fuel System → Fuel Injection Pump
+- Every item, at any level, has maker, model/part no., serial no., location, and running hours, plus its own work log, manuals, and photos
+- On a main item, tick "Also show work on sub-items" to see all work done on everything inside it
+- Move an item to a different place with **Edit / move → Belongs under**
 - A work log for each machine: date, job, type of work, status, work done, parts used, who did it, next due date, and photos
 - PDF manuals and documents stored with each machine
 - Photos taken with the camera or picked from the gallery (resized automatically to save space)
-- A printable report for each machine (Print → Save as PDF)
+- A printable report for any item, with or without its sub-items (Print → Save as PDF)
 - Backup and restore to one file
 - Works with no internet once installed. All data stays on the phone.
 
 ## Put it online (one time, free, with GitHub Pages)
 1. On github.com, open your `machinery-logbook` repository.
-2. Click **Add file → Upload files**. Drag in **everything in this folder**, including the `icons` folder. Click **Commit changes**.
+2. Click **Add file → Upload files**. Drag in **everything in this folder**, all files. Click **Commit changes**.
 3. Go to **Settings → Pages**. Under "Build and deployment", set Source to **Deploy from a branch**, Branch to **main**, and folder to **/ (root)**. Click **Save**.
 4. Wait 1–2 minutes. Your app's address will be
    `https://YOUR-GITHUB-USERNAME.github.io/machinery-logbook/`
