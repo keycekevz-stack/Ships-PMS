@@ -1,26 +1,38 @@
-# Ships-PMS — Ship Docs (Android app)
+# Ships-PMS — Ship PMS (Android app)
 
-Manuals, PMS, certificates, etc. — an Android app that keeps your ship's PDF files on the phone/tablet and lets you find and read them quickly, **fully offline**.
+A planned maintenance app for ships that works fully offline. It covers ship maintenance only (not the full SMS).
 
-## Features
-- **Upload PDFs** — tap *Upload PDF*, pick one or many files (from phone storage, Google Drive, USB, etc.) and choose a folder.
-- **Receive from other apps** — *Share* or *Open with* a PDF from email/WhatsApp/Files → *Ship Docs* to save it.
-- **Ship folders** — Certificates, Manuals, PMS / Maintenance, Procedures / SMS, Checklists, Drawings & Plans, Reports & Forms, Other.
-- **Fast search** by file name, filter by folder, ★ favorites, sort by name / recently added / recently opened.
-- **Built-in PDF viewer** — pinch or double-tap to zoom, page counter, *Go to page*.
-- Rename, move to another folder, share, open in another PDF app, delete.
-- Files are copied into the app's private storage, so they stay available with no internet.
+## How it is organised
+**Ship structure (left side)** – a tree of your ship:
+`Main group → Sub-group → Item`, as deep as you need. Example:
+`Engine Room › Main Engine › Fuel Injection Pumps`.
+On a phone the tree slides in from the left (☰). On a tablet or in landscape it is always visible.
+A red dot shows where something is overdue.
+
+Select any level of the tree. The three tabs then show everything for that part of the ship and everything below it:
+
+| Tab | What it shows |
+|---|---|
+| **Documents** | PDF manuals, drawings and certificates attached to the items |
+| **Schedule** | Planned maintenance jobs with status: **Overdue**, **Due soon** or OK. Filter by status and sort by urgency |
+| **Work done** | History of work carried out: date, who did it, running hours and remarks |
+
+## Maintenance jobs
+- Intervals by calendar (days / weeks / months / years) or by **running hours**.
+- *Record work done* on a job saves it to the history and moves the next due date forward.
+- *Log work* records unplanned or corrective work.
+- Each item can keep a running-hours counter. Tap **Hours** in the header to update it.
+
+## Other
+- Upload PDFs, or Share/Open a PDF from email/WhatsApp/Files into the app.
+- Built-in PDF reader with zoom and go-to-page.
+- **Backup to file / Restore from backup** (⋮ menu). All data stays on the phone, so make backups regularly.
+- Updating from Ship Docs v1 keeps your PDFs (under "Imported documents").
 
 ## Get the APK
-Every push builds the app with GitHub Actions:
-1. Open the repository's **Actions** tab → latest **Build Android APK** run.
-2. Download the **ShipDocs-apk** artifact (a zip), unzip it and copy `app-release.apk` to the phone.
-3. On the phone, open the APK and allow *Install unknown apps* when asked.
+Every push builds the app with GitHub Actions. Sign in to GitHub, open the **Actions** tab, open the latest **Build Android APK** run, and download **ShipDocs-apk** under *Artifacts*. Unzip it and install `app-release.apk`.
 
 Requires Android 8.0 or newer.
 
 ## Build locally
-Open the folder in Android Studio, or run `./gradlew assembleRelease` with the Android SDK installed (JDK 17).
-The APK is written to `app/build/outputs/apk/release/`.
-
-> Note: the release build is signed with the debug key so it installs directly. Use your own signing key before publishing to the Play Store.
+`./gradlew assembleRelease` with the Android SDK and JDK 17, or open the project in Android Studio.

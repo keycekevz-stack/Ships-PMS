@@ -1,22 +1,22 @@
 <resources>
-    <string name="app_name">Ship Docs</string>
+    <string name="app_name">Ship PMS</string>
+    <string name="ship_structure">Ship structure</string>
+    <string name="whole_ship">Whole ship</string>
+    <string name="add_group">Add main group</string>
+    <string name="update_hours">Hours</string>
+    <string name="search_hint">Search</string>
+    <string name="tab_docs">Documents</string>
+    <string name="tab_schedule">Schedule</string>
+    <string name="tab_history">Work done</string>
     <string name="upload_pdf">Upload PDF</string>
-    <string name="search_hint">Search documents</string>
-    <string name="all">All</string>
-    <string name="favorites">★ Favorites</string>
-    <string name="empty_title">No documents yet</string>
-    <string name="empty_body">Tap “Upload PDF” to add manuals, certificates, checklists and PMS files. They are stored on this device and work offline.</string>
-    <string name="no_results">No documents match your search.</string>
-    <string name="choose_category">Save to folder</string>
-    <string name="sort">Sort</string>
+    <string name="add_job">Add job</string>
+    <string name="log_work">Log work</string>
     <string name="go_to_page">Go to page</string>
     <string name="share">Share</string>
     <string name="open_with">Open with other app</string>
-    <string name="rename">Rename</string>
-    <string name="move">Move to folder</string>
-    <string name="delete">Delete</string>
     <string name="cancel">Cancel</string>
     <string name="ok">OK</string>
-    <string name="favorite">Favorite</string>
+    <string name="save">Save</string>
+    <string name="delete">Delete</string>
     <string name="more">More options</string>
 </resources>
