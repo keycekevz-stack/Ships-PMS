@@ -90,7 +90,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="14dp"
-            android:text="Spare parts / consumables used (taken out of stock)"
+            android:text="Spare parts used (taken out of stock)"
             android:textAppearance="?attr/textAppearanceTitleSmall" />
 
         <com.google.android.material.chip.ChipGroup
@@ -104,6 +104,25 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="Add spare part used" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:text="Consumables used (taken out of stock)"
+            android:textAppearance="?attr/textAppearanceTitleSmall" />
+
+        <com.google.android.material.chip.ChipGroup
+            android:id="@+id/consumables_used"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/add_consumable_used"
+            style="@style/Widget.Material3.Button.TonalButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Add consumable used" />
 
         <include layout="@layout/attachments_section" />
     </LinearLayout>

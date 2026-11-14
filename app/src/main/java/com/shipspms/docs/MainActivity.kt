@@ -74,8 +74,7 @@ class MainActivity : AppCompatActivity() {
 
     /** Frequency groups for the schedule filter. */
     private enum class FreqFilter(val label: String) {
-        ALL("All frequencies"), WEEKLY("Daily / weekly"), MONTHLY("Monthly"), QUARTERLY("Quarterly"),
-        HALF("Half-yearly"), ANNUAL("Annual"), MULTI("2 years +"), HOURS("Running hours"), ONCE("One-time"),
+        ALL("All frequencies"), WEEKLY("Weekly"), MONTHLY("Monthly"), ANNUAL("Annual"), HOURS("Running hours"), ONCE("One-time"),
     }
 
     /** Columns of the schedule table. */
@@ -167,6 +166,9 @@ class MainActivity : AppCompatActivity() {
     private val dueChips = mutableMapOf<DueFilter, Chip>()
     private val freqChips = mutableMapOf<FreqFilter, Chip>()
     private var freqFilter = FreqFilter.ALL
+    /** "Every how many" weeks / months / years / hours within the chosen frequency; null = any. */
+    private var freqEvery: Int? = null
+    private lateinit var chips4: ChipGroup
     private var rangeFrom: Long? = null
     private var rangeTo: Long? = null
     private var schedSort = SchedCol.DUE
@@ -297,6 +299,7 @@ class MainActivity : AppCompatActivity() {
         chips = findViewById(R.id.chips)
         chips2 = findViewById(R.id.chips2)
         chips3 = findViewById(R.id.chips3)
+        chips4 = findViewById(R.id.chips4)
         list = findViewById(R.id.list)
         empty = findViewById(R.id.empty)
         progress = findViewById(R.id.progress)
@@ -380,8 +383,7 @@ class MainActivity : AppCompatActivity() {
         when (payload) {
             is Doc -> openFiles(listOf(payload.file), 0, payload.name)
             is Job -> showJobDetails(payload)
-            is WorkRecord -> if (ship().locked) showRecordDetails(payload)
-                else showRecordDialog(payload.nodeId, store.jobs.firstOrNull { it.id == payload.jobId }, payload)
+            is WorkRecord -> showRecordDetails(payload)
             is Certificate -> if (ship().locked) showCertDetails(payload) else showCertDialog(payload, payload.nodeId)
             is SparePart -> showPartDetails(payload)
         }
@@ -576,7 +578,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun refreshChips() {
-        clearChips(chips); clearChips(chips2); clearChips(chips3)
+        clearChips(chips); clearChips(chips2); clearChips(chips3); clearChips(chips4)
         dueChips.clear(); freqChips.clear()
         when (tab) {
             Tab.SCHEDULE -> {
@@ -592,7 +594,19 @@ class MainActivity : AppCompatActivity() {
                     dueChips[DueFilter.RANGE]?.setOnClickListener { if (dueFilter == DueFilter.RANGE) pickRange() }
                 }
                 freqChips += fillChips(chips3, FreqFilter.entries, freqFilter, { it.label }) { f ->
-                    freqFilter = f; refreshList()
+                    freqFilter = f
+                    freqEvery = null
+                    chips3.post { refreshChips(); refreshList() }
+                }
+                // Second step: every how many weeks / months / years / hours (only values that exist).
+                if (freqFilter in setOf(FreqFilter.WEEKLY, FreqFilter.MONTHLY, FreqFilter.ANNUAL, FreqFilter.HOURS)) {
+                    val ids = store.subtreeIds(selectedId, shipId)
+                    val groupJobs = store.jobs.filter { it.nodeId in ids && matchesType(it) && freqGroup(it) == freqFilter }
+                    val values: List<Int?> = listOf<Int?>(null) + groupJobs.map { everyOf(it) }.distinct().sorted()
+                    if (freqEvery !in values) freqEvery = null
+                    fillChips(chips4, values, freqEvery, { n ->
+                        if (n == null) "Any" else "${everyFilterLabel(freqFilter, n)} (${groupJobs.count { everyOf(it) == n }})"
+                    }) { n -> freqEvery = n; refreshList() }
                 }
             }
             Tab.CERTS -> fillChips(chips, CertFilter.entries, certFilter, { it.label }) {
@@ -617,6 +631,7 @@ class MainActivity : AppCompatActivity() {
         (chips.parent as View).visibility = if (chips.childCount > 0) View.VISIBLE else View.GONE
         (chips2.parent as View).visibility = if (chips2.childCount > 0) View.VISIBLE else View.GONE
         (chips3.parent as View).visibility = if (chips3.childCount > 0) View.VISIBLE else View.GONE
+        (chips4.parent as View).visibility = if (chips4.childCount > 0) View.VISIBLE else View.GONE
     }
 
     private fun refreshFab() {
@@ -684,7 +699,10 @@ class MainActivity : AppCompatActivity() {
                         r.doneBy.takeIf { it.isNotBlank() }?.let { "by $it" },
                         r.hours?.let { "at ${numFmt.format(it)} h" },
                         if (photos > 0) "📷 $photos" else null,
-                        if (r.partsUsed.isNotEmpty()) "🔩 ${r.partsUsed.sumOf { it.qty }} parts" else null,
+                        r.partsUsed.filter { store.part(it.partId)?.consumable != true }.takeIf { it.isNotEmpty() }
+                            ?.let { "🔩 ${it.size} spare part${if (it.size > 1) "s" else ""}" },
+                        r.partsUsed.filter { store.part(it.partId)?.consumable == true }.takeIf { it.isNotEmpty() }
+                            ?.let { "🧴 ${it.size} consumable${if (it.size > 1) "s" else ""}" },
                         if (r.jobId == null) "unplanned" else null,
                     ).joinToString(" · ")
                     RowItem(
@@ -983,6 +1001,19 @@ class MainActivity : AppCompatActivity() {
             ?: if (unit == IntervalUnit.HOURS) "Every ${numFmt.format(value)} running hours"
             else "Every $value ${if (value == 1) unit.short.removeSuffix("s") else unit.short}"
 
+    /** How many weeks / months / years can be chosen in the "Every" dropdown. */
+    private fun everyChoices(unit: IntervalUnit): List<Int> = when (unit) {
+        IntervalUnit.WEEKS -> (1..52).toList()
+        IntervalUnit.MONTHS -> (1..24).toList() + listOf(30, 36, 48, 60)
+        IntervalUnit.YEARS -> (1..10).toList() + listOf(12, 15, 20, 25, 30)
+        else -> emptyList()
+    }
+
+    private fun everyLabel(n: Int, unit: IntervalUnit): String {
+        val word = when (unit) { IntervalUnit.WEEKS -> "week"; IntervalUnit.MONTHS -> "month"; IntervalUnit.YEARS -> "year"; else -> "day" }
+        return if (n == 1) "Every $word" else "Every $n ${word}s"
+    }
+
     private fun showJobDialog(existing: Job?, nodeId: String) {
         val v = layoutInflater.inflate(R.layout.dialog_job, null)
         val node = store.node(nodeId)
@@ -990,13 +1021,13 @@ class MainActivity : AppCompatActivity() {
         val titleLayout = v.findViewById<TextInputLayout>(R.id.job_title_layout)
         val title = v.findViewById<TextInputEditText>(R.id.job_title)
         val repeatField = v.findViewById<MaterialAutoCompleteTextView>(R.id.repeat_type)
-        val freqLayout = v.findViewById<TextInputLayout>(R.id.frequency_layout)
-        val freqField = v.findViewById<MaterialAutoCompleteTextView>(R.id.frequency)
-        val customGroup = v.findViewById<View>(R.id.custom_group)
-        val intervalLayout = v.findViewById<TextInputLayout>(R.id.interval_layout)
-        val interval = v.findViewById<TextInputEditText>(R.id.interval)
-        val customUnitLayout = v.findViewById<TextInputLayout>(R.id.custom_unit_layout)
-        val customUnitField = v.findViewById<MaterialAutoCompleteTextView>(R.id.custom_unit)
+        val repeatLayout = v.findViewById<TextInputLayout>(R.id.repeat_type_layout)
+        val everyLayout = v.findViewById<TextInputLayout>(R.id.frequency_layout)
+        val everyField = v.findViewById<MaterialAutoCompleteTextView>(R.id.frequency)
+        val hoursGroup = v.findViewById<View>(R.id.custom_group)
+        val hoursLayout = v.findViewById<TextInputLayout>(R.id.interval_layout)
+        val hoursEvery = v.findViewById<TextInputEditText>(R.id.interval)
+        v.findViewById<View>(R.id.custom_unit_layout).visibility = View.GONE
         val lastDateLayout = v.findViewById<TextInputLayout>(R.id.last_date_layout)
         val lastDate = v.findViewById<TextInputEditText>(R.id.last_date)
         val lastHoursLayout = v.findViewById<TextInputLayout>(R.id.last_hours_layout)
@@ -1005,45 +1036,42 @@ class MainActivity : AppCompatActivity() {
         val dueField = v.findViewById<TextInputEditText>(R.id.due_once)
         val instructions = v.findViewById<TextInputEditText>(R.id.instructions)
 
-        // 0 = one-time, 1 = calendar, 2 = running hours
-        val repeatLabels = arrayOf("One-time (not recurring)", "Recurring – by calendar", "Recurring – by running hours")
-        var repeat = when {
-            existing == null -> 1
-            !existing.recurring -> 0
-            existing.unit == IntervalUnit.HOURS -> 2
-            else -> 1
+        // Repeat types: 0 one-time, 1 weekly, 2 monthly, 3 annually, 4 running hours
+        val repeatLabels = arrayOf("One-time (not recurring)", "Weekly", "Monthly", "Annually", "Running hours")
+        val repeatUnits = listOf(null, IntervalUnit.WEEKS, IntervalUnit.MONTHS, IntervalUnit.YEARS, IntervalUnit.HOURS)
+        repeatLayout.hint = "Frequency"
+
+        var repeat: Int
+        var every: Int
+        when {
+            existing == null -> { repeat = 2; every = 1 }
+            !existing.recurring -> { repeat = 0; every = 1 }
+            existing.unit == IntervalUnit.DAYS -> { repeat = 1; every = maxOf(1, (existing.intervalValue + 6) / 7) }
+            existing.unit == IntervalUnit.WEEKS -> { repeat = 1; every = existing.intervalValue }
+            existing.unit == IntervalUnit.MONTHS -> { repeat = 2; every = existing.intervalValue }
+            existing.unit == IntervalUnit.YEARS -> { repeat = 3; every = existing.intervalValue }
+            else -> { repeat = 4; every = 1 }
         }
-        fun presets() = if (repeat == 2) hourFreqs else calendarFreqs
-        // Index into presets(); presets().size means "Custom".
-        var freqIndex = 0
-        var customUnit = IntervalUnit.MONTHS
-        fun initFreq(value: Int?, unit: IntervalUnit?) {
-            val list = presets()
-            val i = list.indexOfFirst { it.value == value && it.unit == unit }
-            freqIndex = when {
-                i >= 0 -> i
-                value != null && unit != null && (unit == IntervalUnit.HOURS) == (repeat == 2) -> list.size
-                repeat == 2 -> list.indexOfFirst { it.value == 4000 }.coerceAtLeast(0)
-                else -> list.indexOfFirst { it.label == "Monthly" }.coerceAtLeast(0)
-            }
-            if (freqIndex == list.size) {
-                interval.setText(value?.toString())
-                if (unit != null && unit != IntervalUnit.HOURS) customUnit = unit
-            }
+        existing?.takeIf { it.unit == IntervalUnit.HOURS }?.let { hoursEvery.setText(it.intervalValue.toString()) }
+
+        fun choices(): List<Int> {
+            val u = repeatUnits[repeat] ?: return emptyList()
+            return (everyChoices(u) + every).distinct().sorted()
         }
-        initFreq(existing?.takeIf { it.recurring }?.intervalValue, existing?.takeIf { it.recurring }?.unit)
 
         fun updateUi() {
-            val list = presets()
-            freqField.setSimpleItems((list.map { it.label } + "Custom…").toTypedArray())
-            freqField.setText(if (freqIndex >= list.size) "Custom…" else list[freqIndex].label, false)
-            val custom = repeat != 0 && freqIndex >= list.size
-            freqLayout.visibility = if (repeat == 0) View.GONE else View.VISIBLE
-            customGroup.visibility = if (custom) View.VISIBLE else View.GONE
-            customUnitLayout.visibility = if (repeat == 1) View.VISIBLE else View.GONE
-            intervalLayout.hint = if (repeat == 2) "Every … running hours" else "Every"
+            val u = repeatUnits[repeat]
+            val calendar = u == IntervalUnit.WEEKS || u == IntervalUnit.MONTHS || u == IntervalUnit.YEARS
+            everyLayout.visibility = if (calendar) View.VISIBLE else View.GONE
+            if (calendar && u != null) {
+                everyLayout.hint = "How many ${u.label.lowercase()}"
+                everyField.setSimpleItems(choices().map { everyLabel(it, u) }.toTypedArray())
+                everyField.setText(everyLabel(every, u), false)
+            }
+            hoursGroup.visibility = if (repeat == 4) View.VISIBLE else View.GONE
+            hoursLayout.hint = "Every … running hours"
             lastDateLayout.visibility = if (repeat == 0) View.GONE else View.VISIBLE
-            lastHoursLayout.visibility = if (repeat == 2) View.VISIBLE else View.GONE
+            lastHoursLayout.visibility = if (repeat == 4) View.VISIBLE else View.GONE
             dueLayout.visibility = if (repeat == 0) View.VISIBLE else View.GONE
         }
 
@@ -1052,14 +1080,14 @@ class MainActivity : AppCompatActivity() {
         repeatField.setOnItemClickListener { _, _, pos, _ ->
             if (pos != repeat) {
                 repeat = pos
-                if (repeat != 0) initFreq(null, null)
+                every = 1
                 updateUi()
             }
         }
-        freqField.setOnItemClickListener { _, _, pos, _ -> freqIndex = pos; updateUi() }
-        customUnitField.setSimpleItems(calendarUnits.map { it.label }.toTypedArray())
-        customUnitField.setText(customUnit.label, false)
-        customUnitField.setOnItemClickListener { _, _, pos, _ -> customUnit = calendarUnits[pos] }
+        everyField.setOnItemClickListener { _, _, pos, _ ->
+            every = choices()[pos]
+            updateUi()
+        }
 
         var date = existing?.lastDoneDate ?: System.currentTimeMillis()
         var due = existing?.dueOnce ?: (PmsStore.startOfToday() + 7 * PmsStore.DAY + 12 * 3600_000L)
@@ -1082,19 +1110,12 @@ class MainActivity : AppCompatActivity() {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 val t = title.text.toString().trim()
                 titleLayout.error = if (t.isEmpty()) "Enter the job" else null
-                val list = presets()
-                val custom = repeat != 0 && freqIndex >= list.size
-                val n: Int
-                val u: IntervalUnit
-                if (repeat == 0) { n = 1; u = IntervalUnit.MONTHS }
-                else if (custom) {
-                    n = interval.text.toString().toIntOrNull() ?: 0
-                    u = if (repeat == 2) IntervalUnit.HOURS else customUnit
-                } else { n = list[freqIndex].value; u = list[freqIndex].unit }
-                intervalLayout.error = if (custom && n <= 0) "Required" else null
-                if (t.isEmpty() || (custom && n <= 0)) return@setOnClickListener
+                val u = repeatUnits[repeat] ?: IntervalUnit.MONTHS
+                val n = if (repeat == 4) hoursEvery.text.toString().toIntOrNull() ?: 0 else every
+                hoursLayout.error = if (repeat == 4 && n <= 0) "Enter the running hours" else null
+                if (t.isEmpty() || (repeat == 4 && n <= 0)) return@setOnClickListener
 
-                val job = (existing ?: Job(PmsStore.newId(), nodeId, t, n, u, date, null, "")).apply {
+                val job = (existing ?: Job(PmsStore.newId(), nodeId, t, maxOf(n, 1), u, date, null, "")).apply {
                     this.title = t
                     this.recurring = repeat != 0
                     this.instructions = instructions.text.toString().trim()
@@ -1158,24 +1179,26 @@ class MainActivity : AppCompatActivity() {
         val hours = v.findViewById<TextInputEditText>(R.id.hours)
         val remarks = v.findViewById<TextInputEditText>(R.id.remarks)
         val partsGroup = v.findViewById<ChipGroup>(R.id.parts_used)
+        val consGroup = v.findViewById<ChipGroup>(R.id.consumables_used)
 
         val recordId = existing?.id ?: PmsStore.newId()
         val used = existing?.partsUsed.orEmpty().toMutableList()
         val originallyUsed = existing?.partsUsed.orEmpty()
         fun renderParts() {
             partsGroup.removeAllViews()
+            consGroup.removeAllViews()
             used.forEach { u ->
                 val part = store.part(u.partId)
-                partsGroup.addView(Chip(this).apply {
-                    text = "${u.qty} × ${part?.name ?: "deleted part"}"
+                (if (part?.consumable == true) consGroup else partsGroup).addView(Chip(this).apply {
+                    text = "${u.qty} ${part?.unit.orEmpty()} × ${part?.name ?: "deleted item"}"
                     isCloseIconVisible = true
                     setOnCloseIconClickListener { used.remove(u); renderParts() }
                 })
             }
         }
         renderParts()
-        v.findViewById<View>(R.id.add_part_used).setOnClickListener {
-            choosePartForUnit(nodeId) { part ->
+        fun addUsed(consumable: Boolean) {
+            choosePartForUnit(nodeId, consumable) { part ->
                 // Stock available for this record = current stock + what this record had already taken out.
                 val available = part.quantity + originallyUsed.filter { it.partId == part.id }.sumOf { it.qty } -
                     used.filter { it.partId == part.id }.sumOf { it.qty }
@@ -1183,12 +1206,14 @@ class MainActivity : AppCompatActivity() {
                     val q = t.toIntOrNull() ?: 0
                     when {
                         q <= 0 -> toast("Enter a quantity")
-                        q > available -> toast("Only $available ${part.unit} in stock. Receive stock first (Spare parts tab).")
+                        q > available -> toast("Only $available ${part.unit} in stock. Receive stock first (${if (part.consumable) "Consumables" else "Spare parts"} tab).")
                         else -> { used += PartUse(part.id, q); renderParts() }
                     }
                 }
             }
         }
+        v.findViewById<View>(R.id.add_part_used).setOnClickListener { addUsed(false) }
+        v.findViewById<View>(R.id.add_consumable_used).setOnClickListener { addUsed(true) }
         val photos = FileSession(v, store.photoDir(recordId), store.photos(recordId), "Photos of the work (required)", allowPdf = false, title = "Work photos")
 
         var date = existing?.date ?: System.currentTimeMillis()
@@ -1502,25 +1527,81 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    /** Read-only view of a work record (used when the ship is locked). */
+    /** Preview of a work record: details and photos. Edit and PDF are buttons here. */
     private fun showRecordDetails(r: WorkRecord) {
         val photos = store.photos(r.id)
-        val msg = listOfNotNull(
+        val caps = store.captions(store.photoDir(r.id))
+        val job = store.jobs.firstOrNull { it.id == r.jobId }
+        val d = resources.displayMetrics.density
+        val pad = (20 * d).toInt()
+
+        fun usedText(consumable: Boolean): String? = r.partsUsed
+            .filter { (store.part(it.partId)?.consumable ?: false) == consumable }
+            .takeIf { it.isNotEmpty() }
+            ?.joinToString("\n", prefix = if (consumable) "Consumables used:\n" else "Spare parts used:\n") { u ->
+                val p = store.part(u.partId)
+                "• ${u.qty} ${p?.unit.orEmpty()} × ${p?.name ?: "deleted item"}"
+            }
+
+        val details = listOfNotNull(
             store.path(r.nodeId),
-            dateFmt.format(Date(r.date)),
-            r.doneBy.takeIf { it.isNotBlank() }?.let { "Done by $it" },
-            r.hours?.let { "At ${numFmt.format(it)} running hours" },
-            r.remarks.takeIf { it.isNotBlank() },
-            r.partsUsed.takeIf { it.isNotEmpty() }?.joinToString("\n", prefix = "Spare parts used:\n") { u ->
-                "• ${u.qty} × ${store.part(u.partId)?.name ?: "deleted part"}"
-            },
-        ).joinToString("\n")
-        MaterialAlertDialogBuilder(this)
+            job?.let { "Job: ${it.title} (" + (if (it.recurring) freqLabel(it.intervalValue, it.unit) else "one-time") + ")" }
+                ?: "Unplanned / corrective work",
+            "Date: " + dateFmt.format(Date(r.date)),
+            r.doneBy.takeIf { it.isNotBlank() }?.let { "Done by: $it" },
+            r.hours?.let { "Running hours: ${numFmt.format(it)} h" },
+            r.remarks.takeIf { it.isNotBlank() }?.let { "Remarks: $it" },
+            usedText(false),
+            usedText(true),
+        ).joinToString("\n\n")
+
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad / 2, pad, 0)
+            addView(TextView(this@MainActivity).apply {
+                text = details
+                textSize = 15f
+                setTextIsSelectable(true)
+            })
+            if (photos.isNotEmpty()) {
+                addView(TextView(this@MainActivity).apply {
+                    text = "Photos (${photos.size}) – tap to view"
+                    setTypeface(null, android.graphics.Typeface.BOLD)
+                    setPadding(0, pad, 0, (6 * d).toInt())
+                })
+                val strip = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL }
+                val size = (96 * d).toInt()
+                photos.forEachIndexed { i, f ->
+                    strip.addView(LinearLayout(this@MainActivity).apply {
+                        orientation = LinearLayout.VERTICAL
+                        layoutParams = LinearLayout.LayoutParams(size, LinearLayout.LayoutParams.WRAP_CONTENT).apply { marginEnd = (8 * d).toInt() }
+                        setOnClickListener { openFiles(photos, i, r.title) }
+                        addView(ImageView(this@MainActivity).apply {
+                            layoutParams = LinearLayout.LayoutParams(size, size)
+                            scaleType = ImageView.ScaleType.CENTER_CROP
+                            setBackgroundColor(0x22888888)
+                            if (Images.isImage(f)) setImageBitmap(Images.thumbnail(f, size)) else setImageResource(R.drawable.ic_pdf)
+                        })
+                        caps[f.name]?.takeIf { it.isNotBlank() }?.let { c ->
+                            addView(TextView(this@MainActivity).apply { text = c; textSize = 12f; maxLines = 3 })
+                        }
+                    })
+                }
+                addView(android.widget.HorizontalScrollView(this@MainActivity).apply { addView(strip) })
+            }
+        }
+
+        val b = MaterialAlertDialogBuilder(this)
             .setTitle(r.title)
-            .setMessage(msg)
-            .apply { if (photos.isNotEmpty()) setPositiveButton("Photos (${photos.size})") { _, _ -> openFiles(photos, 0, r.title) } }
+            .setView(android.widget.ScrollView(this).apply { addView(content) })
+            .setNeutralButton("PDF report") { _, _ -> recordPdf(r) }
             .setNegativeButton("Close", null)
-            .show()
+        if (!ship().locked) {
+            b.setPositiveButton("Edit") { _, _ ->
+                showRecordDialog(r.nodeId, store.jobs.firstOrNull { it.id == r.jobId }, r)
+            }
+        }
+        b.show()
     }
 
     /** Read-only view of a certificate (used when the ship is locked). */
@@ -1546,19 +1627,26 @@ class MainActivity : AppCompatActivity() {
     // Schedule table, date range, frequency groups
     // =====================================================================
 
-    private fun freqGroup(j: Job): FreqFilter {
-        if (!j.recurring) return FreqFilter.ONCE
-        if (j.unit == IntervalUnit.HOURS) return FreqFilter.HOURS
-        val days = approxDays(j)
-        return when {
-            days <= 14 -> FreqFilter.WEEKLY
-            days <= 62 -> FreqFilter.MONTHLY
-            days <= 125 -> FreqFilter.QUARTERLY
-            days <= 190 -> FreqFilter.HALF
-            days <= 370 -> FreqFilter.ANNUAL
-            else -> FreqFilter.MULTI
-        }
+    private fun freqGroup(j: Job): FreqFilter = when {
+        !j.recurring -> FreqFilter.ONCE
+        j.unit == IntervalUnit.HOURS -> FreqFilter.HOURS
+        j.unit == IntervalUnit.DAYS || j.unit == IntervalUnit.WEEKS -> FreqFilter.WEEKLY
+        j.unit == IntervalUnit.MONTHS -> FreqFilter.MONTHLY
+        else -> FreqFilter.ANNUAL
     }
+
+    /** The "every N" number of a job in its frequency group (days are counted as weeks). */
+    private fun everyOf(j: Job): Int = if (j.unit == IntervalUnit.DAYS) maxOf(1, (j.intervalValue + 6) / 7) else j.intervalValue
+
+    private fun everyFilterLabel(f: FreqFilter, n: Int): String = when (f) {
+        FreqFilter.WEEKLY -> everyLabel(n, IntervalUnit.WEEKS)
+        FreqFilter.MONTHLY -> everyLabel(n, IntervalUnit.MONTHS)
+        FreqFilter.ANNUAL -> everyLabel(n, IntervalUnit.YEARS)
+        else -> "Every ${numFmt.format(n)} h"
+    }
+
+    private fun matchesFreq(j: Job): Boolean =
+        freqFilter == FreqFilter.ALL || (freqGroup(j) == freqFilter && (freqEvery == null || everyOf(j) == freqEvery))
 
     /** Interval length in days (approximate), for sorting by frequency. Running hours go last. */
     private fun approxDays(j: Job): Int = when {
@@ -1674,7 +1762,7 @@ class MainActivity : AppCompatActivity() {
         val typed = store.jobs.filter { it.nodeId in ids && matchesType(it) }
         // Counts shown on the filter chips.
         dueChips.forEach { (f, chip) ->
-            val n = typed.count { (freqFilter == FreqFilter.ALL || freqGroup(it) == freqFilter) && matchesDue(it, f) }
+            val n = typed.count { matchesFreq(it) && matchesDue(it, f) }
             chip.text = if (f == DueFilter.ALL || (f == DueFilter.RANGE && rangeFrom == null)) dueLabel(f) else "${dueLabel(f)} ($n)"
         }
         freqChips.forEach { (f, chip) ->
@@ -1682,7 +1770,7 @@ class MainActivity : AppCompatActivity() {
             chip.text = if (f == FreqFilter.ALL) f.label else "${f.label} ($n)"
         }
         return typed
-            .filter { matchesDue(it, dueFilter) && (freqFilter == FreqFilter.ALL || freqGroup(it) == freqFilter) }
+            .filter { matchesDue(it, dueFilter) && matchesFreq(it) }
             .filter { matches(it.title, store.path(it.nodeId), it.instructions) }
             .sortedWith(schedComparator())
             .map { j ->
@@ -1727,11 +1815,13 @@ class MainActivity : AppCompatActivity() {
                 "Remarks" to r.remarks,
             )
         )
-        if (r.partsUsed.isNotEmpty()) {
-            text("Spare parts / consumables used", 10.5f, bold = true)
+        for (consumable in listOf(false, true)) {
+            val uses = r.partsUsed.filter { (store.part(it.partId)?.consumable ?: false) == consumable }
+            if (uses.isEmpty()) continue
+            text(if (consumable) "Consumables used" else "Spare parts used", 10.5f, bold = true)
             table(
-                listOf("Item" to 3f, "Part no. / code" to 2f, "Qty" to 0.8f, "Unit" to 0.8f),
-                r.partsUsed.map { u ->
+                listOf((if (consumable) "Consumable" else "Spare part") to 3f, (if (consumable) "Code" else "Part no.") to 2f, "Qty" to 0.8f, "Unit" to 0.8f),
+                uses.map { u ->
                     val p = store.part(u.partId)
                     listOf(p?.name ?: "deleted item", p?.partNumber.orEmpty(), u.qty.toString(), p?.unit.orEmpty())
                 },
@@ -2072,19 +2162,20 @@ class MainActivity : AppCompatActivity() {
      * Pick a part for a work record: first the parts linked to this unit (or the units around it),
      * with an option to show every part of the ship.
      */
-    private fun choosePartForUnit(nodeId: String, onPick: (SparePart) -> Unit) {
-        val all = store.parts.filter { it.shipId == shipId }.sortedBy { it.name.lowercase() }
-        if (all.isEmpty()) { toast("No spare parts or consumables yet. Add them in their tabs."); return }
+    private fun choosePartForUnit(nodeId: String, consumable: Boolean, onPick: (SparePart) -> Unit) {
+        val kind = if (consumable) "consumables" else "spare parts"
+        val all = store.parts.filter { it.shipId == shipId && it.consumable == consumable }.sortedBy { it.name.lowercase() }
+        if (all.isEmpty()) { toast("No $kind yet. Add them in the ${if (consumable) "Consumables" else "Spare parts"} tab."); return }
         val related = mutableSetOf(nodeId)
         var p = store.node(nodeId)?.parentId
         while (p != null) { related += p; p = store.node(p)?.parentId }
         related += store.subtreeIds(nodeId, shipId)
         val linked = all.filter { part -> part.nodeIds.any { it in related } }
         fun pickFrom(list: List<SparePart>, showAllOption: Boolean) {
-            val labels = list.map { "${it.name}  (${it.quantity} ${it.unit})" + if (it.consumable) " · consumable" else "" } +
-                if (showAllOption) listOf("Show all spare parts & consumables…") else emptyList()
+            val labels = list.map { "${it.name}  (${it.quantity} ${it.unit} in stock)" } +
+                if (showAllOption) listOf("Show all $kind…") else emptyList()
             MaterialAlertDialogBuilder(this)
-                .setTitle(if (showAllOption) "For ${store.node(nodeId)?.name}" else "All spare parts & consumables")
+                .setTitle(if (showAllOption) "${kind.replaceFirstChar { it.uppercase() }} for ${store.node(nodeId)?.name}" else "All $kind")
                 .setItems(labels.toTypedArray()) { _, i ->
                     if (i < list.size) onPick(list[i]) else pickFrom(all, false)
                 }
@@ -2254,7 +2345,8 @@ class MainActivity : AppCompatActivity() {
                     layoutParams = LinearLayout.LayoutParams(size, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
                         marginEnd = (6 * d).toInt(); bottomMargin = (6 * d).toInt()
                     }
-                    setOnClickListener { fileMenu(f, index) }
+                    setOnClickListener { openFiles(files.toList(), index, title, captions) }
+                    setOnLongClickListener { fileMenu(f, index); true }
                 }
                 cell.addView(ImageView(this@MainActivity).apply {
                     layoutParams = LinearLayout.LayoutParams(size, size)
@@ -2475,6 +2567,7 @@ class MainActivity : AppCompatActivity() {
         typeFilter.label,
         dueFilter.takeIf { typeFilter != TypeFilter.DONE && it != DueFilter.ALL }?.let { dueLabel(it) },
         freqFilter.takeIf { it != FreqFilter.ALL }?.label,
+        freqEvery?.let { everyFilterLabel(freqFilter, it) },
         query.takeIf { it.isNotEmpty() }?.let { "“$it”" },
         "sorted by " + schedSort.label + if (schedSortAsc) " ▲" else " ▼",
     ).joinToString(" · ")

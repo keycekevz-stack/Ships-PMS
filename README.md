@@ -26,7 +26,7 @@ The top row of the tree is the ship's name. Select any level of the tree. The fo
 | **Work done** | History of work carried out: date, who did it, running hours, remarks and **photos** |
 | **Certificates** | Ship and equipment certificates, with expiry and annual survey dates and a scan or photo |
 | **Spare parts** | Spare parts inventory: stock, minimum level and store location, linked to the units they fit |
-| **Consumables** | Same as spare parts, for oils, chemicals, rags, gasket sheet and similar items. Can also be used in work reports |
+| **Consumables** | Works exactly like spare parts (table, stock, minimum, location, links to units, take out / receive, history), for oils, chemicals, rags, gasket sheet and similar items. Work reports have their own *Consumables used* section |
 
 ## PDF reports (A4) – print, save, share
 - **One work record**: its ⋮ menu → *PDF report*. Includes ship, unit, job, date, done by, running hours, remarks, parts used, every photo with its description, and signature lines.
@@ -34,13 +34,14 @@ The top row of the tree is the ship's name. Select any level of the tree. The fo
 - After it is made: **View · Print · Save to phone · Share**.
 
 ## Photos: descriptions and mark-up
-In a work report (and on certificates and parts), tap a photo to view it, add a **description**, **mark it up** (pen, arrow, box, circle, text, in 6 colours, with undo) or remove it. Descriptions appear in the photo viewer and in the PDF reports.
+In a work report (and on certificates and parts), **tap a photo to view it**. **Long-press** it to add a **description**, **mark it up** (pen, arrow, box, circle, text, in 6 colours, with undo) or remove it.
+Tapping a record in **Work done** opens a **preview** (details, parts and consumables used, photos). The preview has *Edit* and *PDF report* buttons. Descriptions appear in the photo viewer and in the PDF reports.
 
 ## Schedule filters
 - **Type:** All open jobs · Recurring · One-time · Completed one-time
 - **Due by:** Any time · Overdue · Due today · Within a week · Within a month · Within a year · **📅 Date range** (pick a from/to date; tap it again to change the dates).
   Each "due by" list also includes overdue work, so it is the full list of what must be done by then. The number on each filter is how many jobs it contains.
-- **Frequency:** All · Daily/weekly · Monthly · Quarterly · Half-yearly · Annual · 2 years + · Running hours · One-time
+- **Frequency:** All · Weekly · Monthly · Annual · Running hours · One-time. Then pick **every how many** (e.g. Monthly → Every 3 months). Only intervals that your jobs actually use are shown, with how many jobs each has.
 - Results show as a **table** (Status · Job · Unit · Frequency · Last done · Due · Left). Tap a column heading to sort.
 - The search box filters further by text.
 - **Share this list** (share icon at the top) sends the current list as text, e.g. by WhatsApp or email.
@@ -48,8 +49,8 @@ In a work report (and on certificates and parts), tap a photo to view it, add a 
 Running-hours jobs are placed in the "due by" lists assuming the machinery runs 24 hours a day, so the estimate is never later than the real due time.
 
 ## Maintenance jobs
-- **Repeats** dropdown: *One-time*, *Recurring – by calendar* or *Recurring – by running hours*.
-- **How often** dropdown: Daily, Weekly, Every 2 weeks, Monthly, Every 2 months, Quarterly, Every 4 months, Half-yearly, Annually, Every 18 months, Every 2 / 2½ / 3 / 4 / 5 / 10 years. For running hours: every 50 h up to 30,000 h. **Custom…** lets you enter any number.
+- **Frequency** dropdown: *One-time*, *Weekly*, *Monthly*, *Annually* or *Running hours*.
+- **How many** dropdown: every 1–52 weeks, 1–60 months or 1–30 years (e.g. Monthly → every 3 months). For running hours, type the interval (e.g. every 4,000 h).
 - **One-time** jobs (e.g. a defect found during the weekly inspection) have a due date. Recording the work done marks them completed.
 - *Record work done* on a job saves it to the history and moves the next due date forward.
 - *Log work* records unplanned or corrective work.
