@@ -21,16 +21,27 @@ The top row of the tree is the ship's name. Select any level of the tree. The fo
 
 | Tab | What it shows |
 |---|---|
-| **Documents** | PDF manuals, drawings and certificates attached to the items |
+| **Documents** | PDF manuals and drawings, and **instruction videos**, attached to the items. Videos play in the app, offline |
 | **Schedule** | Maintenance jobs, sorted by the next due date. Two rows of filters (see below) |
 | **Work done** | History of work carried out: date, who did it, running hours, remarks and **photos** |
 | **Certificates** | Ship and equipment certificates, with expiry and annual survey dates and a scan or photo |
 | **Spare parts** | Spare parts inventory: stock, minimum level and store location, linked to the units they fit |
+| **Consumables** | Same as spare parts, for oils, chemicals, rags, gasket sheet and similar items. Can also be used in work reports |
+
+## PDF reports (A4) – print, save, share
+- **One work record**: its ⋮ menu → *PDF report*. Includes ship, unit, job, date, done by, running hours, remarks, parts used, every photo with its description, and signature lines.
+- **The whole list on screen**: ⋮ → *PDF report (print / save)*. This works on Work done (table only, or with photos), Schedule, Spare parts and Consumables.
+- After it is made: **View · Print · Save to phone · Share**.
+
+## Photos: descriptions and mark-up
+In a work report (and on certificates and parts), tap a photo to view it, add a **description**, **mark it up** (pen, arrow, box, circle, text, in 6 colours, with undo) or remove it. Descriptions appear in the photo viewer and in the PDF reports.
 
 ## Schedule filters
 - **Type:** All open jobs · Recurring · One-time · Completed one-time
-- **Due by:** Any time · Overdue · Due today · Within a week · Within a month · Within a year.
+- **Due by:** Any time · Overdue · Due today · Within a week · Within a month · Within a year · **📅 Date range** (pick a from/to date; tap it again to change the dates).
   Each "due by" list also includes overdue work, so it is the full list of what must be done by then. The number on each filter is how many jobs it contains.
+- **Frequency:** All · Daily/weekly · Monthly · Quarterly · Half-yearly · Annual · 2 years + · Running hours · One-time
+- Results show as a **table** (Status · Job · Unit · Frequency · Last done · Due · Left). Tap a column heading to sort.
 - The search box filters further by text.
 - **Share this list** (share icon at the top) sends the current list as text, e.g. by WhatsApp or email.
 
