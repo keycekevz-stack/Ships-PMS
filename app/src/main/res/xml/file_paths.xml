@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
     <files-path name="docs" path="pms_docs/" />
+    <files-path name="photos" path="pms_photos/" />
+    <files-path name="certs" path="pms_certs/" />
+    <cache-path name="camera" path="camera/" />
 </paths>

@@ -9,24 +9,41 @@ A planned maintenance app for ships that works fully offline. It covers ship mai
 On a phone the tree slides in from the left (☰). On a tablet or in landscape it is always visible.
 A red dot shows where something is overdue.
 
-Select any level of the tree. The three tabs then show everything for that part of the ship and everything below it:
+Select any level of the tree. The four tabs then show everything for that part of the ship and everything below it:
 
 | Tab | What it shows |
 |---|---|
 | **Documents** | PDF manuals, drawings and certificates attached to the items |
-| **Schedule** | Planned maintenance jobs with status: **Overdue**, **Due soon** or OK. Filter by status and sort by urgency |
-| **Work done** | History of work carried out: date, who did it, running hours and remarks |
+| **Schedule** | Maintenance jobs, sorted by the next due date. Two rows of filters (see below) |
+| **Work done** | History of work carried out: date, who did it, running hours, remarks and **photos** |
+| **Certificates** | Ship and equipment certificates, with expiry and annual survey dates and a scan or photo |
+
+## Schedule filters
+- **Type:** All open jobs · Recurring · One-time · Completed one-time
+- **Due by:** Any time · Overdue · Due today · Within a week · Within a month · Within a year.
+  Each "due by" list also includes overdue work, so it is the full list of what must be done by then. The number on each filter is how many jobs it contains.
+- The search box filters further by text.
+- **Share this list** (share icon at the top) sends the current list as text, e.g. by WhatsApp or email.
+
+Running-hours jobs are placed in the "due by" lists assuming the machinery runs 24 hours a day, so the estimate is never later than the real due time.
 
 ## Maintenance jobs
-- Intervals by calendar (days / weeks / months / years) or by **running hours**.
+- **Recurring**: every X days / weeks / months / years, or every X **running hours**.
+- **One-time**: switch off "Recurring job", e.g. a defect found during the weekly inspection. Give it a due date. Recording the work done marks it completed.
 - *Record work done* on a job saves it to the history and moves the next due date forward.
 - *Log work* records unplanned or corrective work.
+- **At least one photo is required** before a work report can be saved (camera or gallery). Photos are resized to save space.
 - Each item can keep a running-hours counter. Tap **Hours** in the header to update it.
+
+## Certificates
+Name, number, issued by, issue date, expiry date and next annual survey/endorsement date. You can attach a PDF scan or photos.
+Status: **Expired**, **Survey overdue**, **Due soon** (within 30 days) or OK. Filters: Expired/overdue · Within 30 days · Within 90 days.
+Certificates added while "Whole ship" is selected are ship certificates. Certificates added while an item is selected belong to that item.
 
 ## Other
 - Upload PDFs, or Share/Open a PDF from email/WhatsApp/Files into the app.
 - Built-in PDF reader with zoom and go-to-page.
-- **Backup to file / Restore from backup** (⋮ menu). All data stays on the phone, so make backups regularly.
+- **Backup to file / Restore from backup** (⋮ menu). The backup includes photos, certificates and documents. All data stays on the phone, so make backups regularly.
 - Updating from Ship Docs v1 keeps your PDFs (under "Imported documents").
 
 ## Get the APK

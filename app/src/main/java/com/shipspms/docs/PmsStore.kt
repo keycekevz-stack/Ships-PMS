@@ -22,7 +22,8 @@ enum class IntervalUnit(val label: String, val short: String) {
     HOURS("Running hours", "h"),
 }
 
-enum class JobStatus { OVERDUE, DUE_SOON, OK }
+enum class JobStatus { OVERDUE, DUE_SOON, OK, DONE }
+enum class CertStatus { EXPIRED, SURVEY_OVERDUE, DUE_SOON, OK }
 
 /** A place in the ship structure: a group (e.g. Engine Room), sub-group (Main Engine) or item (Fuel Pump). */
 data class Node(
@@ -33,7 +34,10 @@ data class Node(
     var hoursUpdated: Long? = null,
 )
 
-/** A planned maintenance job with a fixed interval. */
+/**
+ * A maintenance job. Recurring jobs repeat every interval; one-time jobs (defects, inspection findings)
+ * have a due date and are closed by recording the work done.
+ */
 data class Job(
     val id: String,
     var nodeId: String,
@@ -43,9 +47,13 @@ data class Job(
     var lastDoneDate: Long,
     var lastDoneHours: Long?,
     var instructions: String,
+    var recurring: Boolean = true,
+    var dueOnce: Long? = null,
+    var completed: Long? = null,
+    var created: Long = System.currentTimeMillis(),
 )
 
-/** A record of maintenance actually carried out (planned or unplanned). */
+/** A record of maintenance actually carried out. Photos live in files/pms_photos/<id>/. */
 data class WorkRecord(
     val id: String,
     var nodeId: String,
@@ -57,24 +65,42 @@ data class WorkRecord(
     var remarks: String,
 )
 
+/** A ship or equipment certificate. nodeId == null means a ship certificate. Files in files/pms_certs/<id>/. */
+data class Certificate(
+    val id: String,
+    var nodeId: String?,
+    var name: String,
+    var number: String,
+    var issuedBy: String,
+    var issueDate: Long?,
+    var expiryDate: Long?,
+    var surveyDate: Long?,
+    var remarks: String,
+)
+
 data class Doc(val file: File, val nodeId: String) {
     val name: String get() = file.nameWithoutExtension
 }
 
 /**
  * All data lives on the device:
- *   files/pms.json                 – tree, jobs and work records
- *   files/pms_docs/<nodeId>/x.pdf  – documents attached to each tree item
+ *   files/pms.json                    – tree, jobs, work records, certificates
+ *   files/pms_docs/<nodeId>/x.pdf     – documents attached to each tree item
+ *   files/pms_photos/<recordId>/x.jpg – photos of work done
+ *   files/pms_certs/<certId>/…        – certificate scans (PDF or photo)
  */
 class PmsStore private constructor(context: Context) {
 
     private val ctx = context.applicationContext
     private val dataFile = File(ctx.filesDir, "pms.json")
     private val docsRoot = File(ctx.filesDir, "pms_docs")
+    private val photosRoot = File(ctx.filesDir, "pms_photos")
+    private val certsRoot = File(ctx.filesDir, "pms_certs")
 
     val nodes = mutableListOf<Node>()
     val jobs = mutableListOf<Job>()
     val records = mutableListOf<WorkRecord>()
+    val certs = mutableListOf<Certificate>()
 
     companion object {
         @Volatile private var instance: PmsStore? = null
@@ -82,7 +108,14 @@ class PmsStore private constructor(context: Context) {
             instance ?: synchronized(this) { instance ?: PmsStore(context).also { instance = it } }
 
         fun newId(): String = UUID.randomUUID().toString()
-        private const val DAY = 24L * 60 * 60 * 1000
+        const val DAY = 24L * 60 * 60 * 1000
+
+        fun startOfToday(): Long = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+        }.timeInMillis
+
+        /** Whole days from today until [time] (0 = today, negative = past). */
+        fun daysUntil(time: Long): Long = Math.floorDiv(time - startOfToday(), DAY)
     }
 
     init {
@@ -92,7 +125,7 @@ class PmsStore private constructor(context: Context) {
     // ---------- Persistence ----------
 
     private fun load() {
-        nodes.clear(); jobs.clear(); records.clear()
+        nodes.clear(); jobs.clear(); records.clear(); certs.clear()
         val root = JSONObject(dataFile.readText())
         root.optJSONArray("nodes")?.forEachObject { o ->
             nodes += Node(
@@ -108,11 +141,15 @@ class PmsStore private constructor(context: Context) {
                 id = o.getString("id"),
                 nodeId = o.getString("nodeId"),
                 title = o.getString("title"),
-                intervalValue = o.getInt("intervalValue"),
+                intervalValue = o.optInt("intervalValue", 1),
                 unit = runCatching { IntervalUnit.valueOf(o.getString("unit")) }.getOrDefault(IntervalUnit.MONTHS),
-                lastDoneDate = o.getLong("lastDoneDate"),
+                lastDoneDate = o.optLong("lastDoneDate", System.currentTimeMillis()),
                 lastDoneHours = o.optLongOrNull("lastDoneHours"),
                 instructions = o.optString("instructions"),
+                recurring = o.optBoolean("recurring", true),
+                dueOnce = o.optLongOrNull("dueOnce"),
+                completed = o.optLongOrNull("completed"),
+                created = o.optLong("created", o.optLong("lastDoneDate", System.currentTimeMillis())),
             )
         }
         root.optJSONArray("records")?.forEachObject { o ->
@@ -127,11 +164,24 @@ class PmsStore private constructor(context: Context) {
                 remarks = o.optString("remarks"),
             )
         }
+        root.optJSONArray("certs")?.forEachObject { o ->
+            certs += Certificate(
+                id = o.getString("id"),
+                nodeId = o.optStringOrNull("nodeId"),
+                name = o.getString("name"),
+                number = o.optString("number"),
+                issuedBy = o.optString("issuedBy"),
+                issueDate = o.optLongOrNull("issueDate"),
+                expiryDate = o.optLongOrNull("expiryDate"),
+                surveyDate = o.optLongOrNull("surveyDate"),
+                remarks = o.optString("remarks"),
+            )
+        }
     }
 
     fun save() {
         val root = JSONObject()
-            .put("version", 1)
+            .put("version", 2)
             .put("nodes", JSONArray().apply {
                 nodes.forEach {
                     put(JSONObject().put("id", it.id).put("parentId", it.parentId).put("name", it.name)
@@ -143,7 +193,8 @@ class PmsStore private constructor(context: Context) {
                     put(JSONObject().put("id", it.id).put("nodeId", it.nodeId).put("title", it.title)
                         .put("intervalValue", it.intervalValue).put("unit", it.unit.name)
                         .put("lastDoneDate", it.lastDoneDate).put("lastDoneHours", it.lastDoneHours)
-                        .put("instructions", it.instructions))
+                        .put("instructions", it.instructions).put("recurring", it.recurring)
+                        .put("dueOnce", it.dueOnce).put("completed", it.completed).put("created", it.created))
                 }
             })
             .put("records", JSONArray().apply {
@@ -151,6 +202,13 @@ class PmsStore private constructor(context: Context) {
                     put(JSONObject().put("id", it.id).put("nodeId", it.nodeId).put("jobId", it.jobId)
                         .put("title", it.title).put("date", it.date).put("doneBy", it.doneBy)
                         .put("hours", it.hours).put("remarks", it.remarks))
+                }
+            })
+            .put("certs", JSONArray().apply {
+                certs.forEach {
+                    put(JSONObject().put("id", it.id).put("nodeId", it.nodeId).put("name", it.name)
+                        .put("number", it.number).put("issuedBy", it.issuedBy).put("issueDate", it.issueDate)
+                        .put("expiryDate", it.expiryDate).put("surveyDate", it.surveyDate).put("remarks", it.remarks))
                 }
             })
         val tmp = File(dataFile.parentFile, "pms.json.tmp")
@@ -213,9 +271,12 @@ class PmsStore private constructor(context: Context) {
 
     fun deleteNode(id: String) {
         val ids = subtreeIds(id)
+        records.filter { it.nodeId in ids }.forEach { photoDir(it.id).deleteRecursively() }
+        certs.filter { it.nodeId in ids }.forEach { certDir(it.id).deleteRecursively() }
         nodes.removeAll { it.id in ids }
         jobs.removeAll { it.nodeId in ids }
         records.removeAll { it.nodeId in ids }
+        certs.removeAll { it.nodeId in ids }
         ids.forEach { File(docsRoot, it).deleteRecursively() }
         save()
     }
@@ -242,6 +303,7 @@ class PmsStore private constructor(context: Context) {
     // ---------- Jobs & status ----------
 
     fun dueDate(job: Job): Long? {
+        if (!job.recurring) return job.dueOnce
         if (job.unit == IntervalUnit.HOURS) return null
         val field = when (job.unit) {
             IntervalUnit.DAYS -> Calendar.DAY_OF_YEAR
@@ -255,8 +317,10 @@ class PmsStore private constructor(context: Context) {
         }.timeInMillis
     }
 
+    fun isHours(job: Job) = job.recurring && job.unit == IntervalUnit.HOURS
+
     fun dueHours(job: Job): Long? =
-        if (job.unit == IntervalUnit.HOURS) (job.lastDoneHours ?: 0L) + job.intervalValue else null
+        if (isHours(job)) (job.lastDoneHours ?: 0L) + job.intervalValue else null
 
     /** Hours left before the job is due (negative = overdue). Null if the item has no running hours yet. */
     fun hoursLeft(job: Job): Long? {
@@ -265,20 +329,19 @@ class PmsStore private constructor(context: Context) {
         return due - current
     }
 
-    /** 0.0 = just done, 1.0 = due now, above 1 = overdue. Used for sorting by urgency. */
-    fun progress(job: Job): Double {
-        return if (job.unit == IntervalUnit.HOURS) {
-            val left = hoursLeft(job) ?: return 0.0
-            1.0 - left.toDouble() / job.intervalValue.coerceAtLeast(1)
-        } else {
-            val due = dueDate(job) ?: return 0.0
-            val span = (due - job.lastDoneDate).coerceAtLeast(1)
-            (System.currentTimeMillis() - job.lastDoneDate).toDouble() / span
-        }
+    /**
+     * Days until the job is due (negative = overdue). Running-hours jobs are estimated assuming
+     * the machinery runs continuously (24 h a day), so the estimate is never later than reality.
+     */
+    fun daysLeft(job: Job): Long? {
+        if (job.completed != null) return null
+        if (isHours(job)) return hoursLeft(job)?.let { Math.floorDiv(it, 24L) }
+        return dueDate(job)?.let { daysUntil(it) }
     }
 
     fun status(job: Job): JobStatus {
-        if (job.unit == IntervalUnit.HOURS) {
+        if (!job.recurring && job.completed != null) return JobStatus.DONE
+        if (isHours(job)) {
             val left = hoursLeft(job) ?: return JobStatus.OK
             return when {
                 left < 0 -> JobStatus.OVERDUE
@@ -287,11 +350,12 @@ class PmsStore private constructor(context: Context) {
             }
         }
         val due = dueDate(job) ?: return JobStatus.OK
-        val now = System.currentTimeMillis()
-        val window = ((due - job.lastDoneDate) / 10).coerceIn(7 * DAY, 30 * DAY)
+        val days = daysUntil(due)
+        val span = if (job.recurring) (due - job.lastDoneDate) / DAY else 70
+        val window = (span / 10).coerceIn(7, 30)
         return when {
-            now > due -> JobStatus.OVERDUE
-            due - now <= window -> JobStatus.DUE_SOON
+            days < 0 -> JobStatus.OVERDUE
+            days <= window -> JobStatus.DUE_SOON
             else -> JobStatus.OK
         }
     }
@@ -318,19 +382,14 @@ class PmsStore private constructor(context: Context) {
         save()
     }
 
-    /** Saves a work record; if it belongs to a job, that job's "last done" moves forward. */
+    /**
+     * Saves a work record. For a recurring job, "last done" moves forward;
+     * a one-time job is marked completed.
+     */
     fun upsertRecord(rec: WorkRecord) {
         val i = records.indexOfFirst { it.id == rec.id }
         if (i >= 0) records[i] = rec else records += rec
-        rec.jobId?.let { jid ->
-            jobs.firstOrNull { it.id == jid }?.let { job ->
-                val latest = records.filter { it.jobId == jid }.maxByOrNull { it.date }
-                if (latest != null && latest.date >= job.lastDoneDate) {
-                    job.lastDoneDate = latest.date
-                    if (latest.hours != null) job.lastDoneHours = latest.hours
-                }
-            }
-        }
+        rec.jobId?.let { syncJobFromRecords(it) }
         rec.hours?.let { h ->
             node(rec.nodeId)?.let { n ->
                 if (n.runningHours == null || h > n.runningHours!!) {
@@ -343,6 +402,62 @@ class PmsStore private constructor(context: Context) {
 
     fun deleteRecord(rec: WorkRecord) {
         records.removeAll { it.id == rec.id }
+        photoDir(rec.id).deleteRecursively()
+        rec.jobId?.let { syncJobFromRecords(it) }
+        save()
+    }
+
+    private fun syncJobFromRecords(jobId: String) {
+        val job = jobs.firstOrNull { it.id == jobId } ?: return
+        val latest = records.filter { it.jobId == jobId }.maxByOrNull { it.date }
+        if (job.recurring) {
+            if (latest != null && latest.date >= job.lastDoneDate) {
+                job.lastDoneDate = latest.date
+                if (latest.hours != null) job.lastDoneHours = latest.hours
+            }
+        } else {
+            job.completed = latest?.date
+        }
+    }
+
+    // ---------- Photos of work done ----------
+
+    fun photoDir(recordId: String) = File(photosRoot, recordId)
+
+    fun photos(recordId: String): List<File> =
+        photoDir(recordId).listFiles { f -> f.isFile }?.sortedBy { it.name }.orEmpty()
+
+    // ---------- Certificates ----------
+
+    fun certDir(certId: String) = File(certsRoot, certId)
+
+    fun certFiles(certId: String): List<File> =
+        certDir(certId).listFiles { f -> f.isFile }?.sortedBy { it.name }.orEmpty()
+
+    /** The nearest of expiry and survey dates. */
+    fun certNextDate(c: Certificate): Long? = listOfNotNull(c.expiryDate, c.surveyDate).minOrNull()
+
+    fun certStatus(c: Certificate): CertStatus {
+        val today = startOfToday()
+        val exp = c.expiryDate
+        val survey = c.surveyDate
+        return when {
+            exp != null && exp < today -> CertStatus.EXPIRED
+            survey != null && survey < today -> CertStatus.SURVEY_OVERDUE
+            certNextDate(c)?.let { daysUntil(it) <= 30 } == true -> CertStatus.DUE_SOON
+            else -> CertStatus.OK
+        }
+    }
+
+    fun upsertCert(c: Certificate) {
+        val i = certs.indexOfFirst { it.id == c.id }
+        if (i >= 0) certs[i] = c else certs += c
+        save()
+    }
+
+    fun deleteCert(c: Certificate) {
+        certs.removeAll { it.id == c.id }
+        certDir(c.id).deleteRecursively()
         save()
     }
 
@@ -354,10 +469,31 @@ class PmsStore private constructor(context: Context) {
     }
 
     /** Copies a picked/shared PDF into the item's folder. Blocking I/O: call off the main thread. */
-    fun importDoc(uri: Uri, nodeId: String): File {
+    fun importDoc(uri: Uri, nodeId: String): File = copyInto(uri, File(docsRoot, nodeId), "pdf")
+
+    /**
+     * Copies a picked file into [dir]: images are resized to save space, anything else is copied as-is.
+     * Blocking I/O: call off the main thread.
+     */
+    fun importAttachment(uri: Uri, dir: File): File {
+        val type = ctx.contentResolver.getType(uri).orEmpty()
+        val name = queryDisplayName(uri).orEmpty()
+        val isImage = type.startsWith("image/") ||
+            name.substringAfterLast('.', "").lowercase() in setOf("jpg", "jpeg", "png", "webp", "heic")
+        if (isImage) {
+            dir.mkdirs()
+            val target = File(dir, "IMG_${System.currentTimeMillis()}.jpg")
+            Images.saveScaled(ctx, uri, target)
+            return target
+        }
+        val ext = name.substringAfterLast('.', "pdf").lowercase().take(5).ifBlank { "pdf" }
+        return copyInto(uri, dir, ext)
+    }
+
+    private fun copyInto(uri: Uri, dir: File, ext: String): File {
         val display = queryDisplayName(uri) ?: uri.lastPathSegment ?: "Document"
         val base = sanitize(display.substringBeforeLast('.', display)).ifBlank { "Document" }
-        val target = uniqueFile(File(docsRoot, nodeId), base)
+        val target = uniqueFile(dir, base, ext)
         ctx.contentResolver.openInputStream(uri).use { input ->
             requireNotNull(input) { "Cannot read $uri" }
             target.outputStream().use { input.copyTo(it) }
@@ -368,11 +504,11 @@ class PmsStore private constructor(context: Context) {
     fun renameDoc(doc: Doc, newName: String): Boolean {
         val base = sanitize(newName).ifBlank { return false }
         if (base == doc.name) return true
-        return doc.file.renameTo(uniqueFile(doc.file.parentFile!!, base))
+        return doc.file.renameTo(uniqueFile(doc.file.parentFile!!, base, "pdf"))
     }
 
     fun moveDoc(doc: Doc, nodeId: String): Boolean =
-        doc.file.renameTo(uniqueFile(File(docsRoot, nodeId), doc.name))
+        doc.file.renameTo(uniqueFile(File(docsRoot, nodeId), doc.name, "pdf"))
 
     private fun queryDisplayName(uri: Uri): String? = try {
         ctx.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
@@ -384,27 +520,31 @@ class PmsStore private constructor(context: Context) {
     private fun sanitize(name: String) =
         name.replace(Regex("[\\\\/:*?\"<>|\\n\\r\\t]"), "_").trim().take(150)
 
-    private fun uniqueFile(dir: File, base: String): File {
+    private fun uniqueFile(dir: File, base: String, ext: String): File {
         dir.mkdirs()
-        var candidate = File(dir, "$base.pdf")
+        var candidate = File(dir, "$base.$ext")
         var n = 2
-        while (candidate.exists()) candidate = File(dir, "$base (${n++}).pdf")
+        while (candidate.exists()) candidate = File(dir, "$base (${n++}).$ext")
         return candidate
     }
 
     // ---------- Backup ----------
 
-    /** Writes pms.json and every document into one zip file. */
+    private fun fileRoots() = mapOf("docs" to docsRoot, "photos" to photosRoot, "certs" to certsRoot)
+
+    /** Writes pms.json plus every document, photo and certificate scan into one zip file. */
     fun backup(out: OutputStream) {
         save()
         ZipOutputStream(out.buffered()).use { zip ->
             zip.putNextEntry(ZipEntry("pms.json"))
             dataFile.inputStream().use { it.copyTo(zip) }
             zip.closeEntry()
-            docsRoot.walkTopDown().filter { it.isFile }.forEach { f ->
-                zip.putNextEntry(ZipEntry("docs/" + f.relativeTo(docsRoot).invariantSeparatorsPath))
-                f.inputStream().use { it.copyTo(zip) }
-                zip.closeEntry()
+            fileRoots().forEach { (prefix, root) ->
+                root.walkTopDown().filter { it.isFile }.forEach { f ->
+                    zip.putNextEntry(ZipEntry("$prefix/" + f.relativeTo(root).invariantSeparatorsPath))
+                    f.inputStream().use { it.copyTo(zip) }
+                    zip.closeEntry()
+                }
             }
         }
     }
@@ -428,8 +568,10 @@ class PmsStore private constructor(context: Context) {
         require(json.exists()) { "This is not a Ship PMS backup" }
         JSONObject(json.readText()) // validate before replacing anything
 
-        docsRoot.deleteRecursively()
-        File(staging, "docs").let { if (it.exists()) it.copyRecursively(docsRoot, overwrite = true) }
+        fileRoots().forEach { (prefix, root) ->
+            root.deleteRecursively()
+            File(staging, prefix).let { if (it.exists()) it.copyRecursively(root, overwrite = true) }
+        }
         json.copyTo(dataFile, overwrite = true)
         staging.deleteRecursively()
         load()

@@ -8,7 +8,8 @@
         android:layout_height="wrap_content"
         android:orientation="vertical"
         android:paddingHorizontal="24dp"
-        android:paddingTop="8dp">
+        android:paddingTop="8dp"
+        android:paddingBottom="8dp">
 
         <TextView
             android:id="@+id/item_path"
@@ -85,5 +86,6 @@
                 android:layout_height="wrap_content"
                 android:inputType="textMultiLine|textCapSentences" android:minLines="2" />
         </com.google.android.material.textfield.TextInputLayout>
+        <include layout="@layout/attachments_section" />
     </LinearLayout>
 </ScrollView>
