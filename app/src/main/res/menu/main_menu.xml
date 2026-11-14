@@ -3,6 +3,7 @@
     xmlns:app="http://schemas.android.com/apk/res-auto">
     <item android:id="@+id/action_share_list" android:icon="@drawable/ic_share"
         android:title="Share this list" app:showAsAction="ifRoom" />
+    <item android:id="@+id/action_pdf" android:title="PDF report (print / save)" app:showAsAction="never" />
     <item android:id="@+id/action_ships" android:title="Switch / add ship" app:showAsAction="never" />
     <item android:id="@+id/action_edit_ship" android:title="Rename this ship" app:showAsAction="never" />
     <item android:id="@+id/action_lock" android:title="Lock this ship" app:showAsAction="never" />

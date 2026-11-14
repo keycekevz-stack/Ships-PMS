@@ -59,7 +59,7 @@ import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
 
-    private enum class Tab(val label: String) { DOCS("Documents"), SCHEDULE("Schedule"), HISTORY("Work done"), CERTS("Certificates"), PARTS("Spare parts") }
+    private enum class Tab(val label: String) { DOCS("Documents"), SCHEDULE("Schedule"), HISTORY("Work done"), CERTS("Certificates"), PARTS("Spare parts"), CONSUMABLES("Consumables") }
 
     /** "Due by" filters. Each one includes overdue work, so it is the full list of what must be done by then. */
     private enum class DueFilter(val label: String, val maxDays: Long?) {
@@ -69,6 +69,19 @@ class MainActivity : AppCompatActivity() {
         WEEK("Within a week", 7),
         MONTH("Within a month", 30),
         YEAR("Within a year", 365),
+        RANGE("Date range…", null),
+    }
+
+    /** Frequency groups for the schedule filter. */
+    private enum class FreqFilter(val label: String) {
+        ALL("All frequencies"), WEEKLY("Daily / weekly"), MONTHLY("Monthly"), QUARTERLY("Quarterly"),
+        HALF("Half-yearly"), ANNUAL("Annual"), MULTI("2 years +"), HOURS("Running hours"), ONCE("One-time"),
+    }
+
+    /** Columns of the schedule table. */
+    private enum class SchedCol(val label: String, val widthDp: Int) {
+        STATUS("Status", 96), JOB("Job", 200), UNIT("Unit", 180), FREQ("Frequency", 170),
+        LAST("Last done", 120), DUE("Due", 130), LEFT("Left", 120),
     }
 
     private enum class TypeFilter(val label: String) {
@@ -152,6 +165,27 @@ class MainActivity : AppCompatActivity() {
     private var historyJobId: String? = null
     private var pendingImportNode: String? = null
     private val dueChips = mutableMapOf<DueFilter, Chip>()
+    private val freqChips = mutableMapOf<FreqFilter, Chip>()
+    private var freqFilter = FreqFilter.ALL
+    private var rangeFrom: Long? = null
+    private var rangeTo: Long? = null
+    private var schedSort = SchedCol.DUE
+    private var schedSortAsc = true
+    private var tableKey: String? = null
+    private lateinit var chips3: ChipGroup
+    private lateinit var tableList: RecyclerView
+    private var pendingPdf: File? = null
+
+    private val annotate = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
+        if (r.resultCode == RESULT_OK) session?.render()
+    }
+
+    private val savePdf = registerForActivityResult(ActivityResultContracts.CreateDocument("application/pdf")) { uri ->
+        val f = pendingPdf
+        if (uri != null && f != null) runIo("PDF saved", "Save failed") {
+            contentResolver.openOutputStream(uri).use { out -> f.inputStream().use { it.copyTo(requireNotNull(out)) } }
+        }
+    }
 
     /** Photos / files being added in the dialog that is currently open. */
     private var session: FileSession? = null
@@ -262,6 +296,7 @@ class MainActivity : AppCompatActivity() {
         tabs = findViewById(R.id.tabs)
         chips = findViewById(R.id.chips)
         chips2 = findViewById(R.id.chips2)
+        chips3 = findViewById(R.id.chips3)
         list = findViewById(R.id.list)
         empty = findViewById(R.id.empty)
         progress = findViewById(R.id.progress)
@@ -274,6 +309,7 @@ class MainActivity : AppCompatActivity() {
         toolbar.setOnMenuItemClickListener {
             when (it.itemId) {
                 R.id.action_share_list -> shareCurrentList()
+                R.id.action_pdf -> pdfOfCurrentList()
                 R.id.action_backup -> {
                     val stamp = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
                     createBackup.launch("ShipPMS-backup-$stamp.zip")
@@ -340,50 +376,72 @@ class MainActivity : AppCompatActivity() {
         })
     }
 
+    private fun openPayload(payload: Any) {
+        when (payload) {
+            is Doc -> openFiles(listOf(payload.file), 0, payload.name)
+            is Job -> showJobDetails(payload)
+            is WorkRecord -> if (ship().locked) showRecordDetails(payload)
+                else showRecordDialog(payload.nodeId, store.jobs.firstOrNull { it.id == payload.jobId }, payload)
+            is Certificate -> if (ship().locked) showCertDetails(payload) else showCertDialog(payload, payload.nodeId)
+            is SparePart -> showPartDetails(payload)
+        }
+    }
+
+    private fun morePayload(payload: Any, anchor: View) {
+        when (payload) {
+            is Doc -> showDocMenu(payload, anchor)
+            is Job -> showJobMenu(payload)
+            is WorkRecord -> showRecordMenu(payload, anchor)
+            is Certificate -> showCertMenu(payload, anchor)
+            is SparePart -> showPartMenu(payload, anchor)
+        }
+    }
+
     private fun setupList() {
-        rowAdapter = RowAdapter(
-            onClick = { payload ->
-                when (payload) {
-                    is Doc -> openFiles(listOf(payload.file), 0, payload.name)
-                    is Job -> showJobDetails(payload)
-                    is WorkRecord -> if (ship().locked) showRecordDetails(payload)
-                        else showRecordDialog(payload.nodeId, store.jobs.firstOrNull { it.id == payload.jobId }, payload)
-                    is Certificate -> if (ship().locked) showCertDetails(payload) else showCertDialog(payload, payload.nodeId)
-                    is SparePart -> showPartDetails(payload)
-                }
-            },
-            onMore = { payload, anchor ->
-                when (payload) {
-                    is Doc -> showDocMenu(payload, anchor)
-                    is Job -> showJobMenu(payload)
-                    is WorkRecord -> showRecordMenu(payload, anchor)
-                    is Certificate -> showCertMenu(payload, anchor)
-                    is SparePart -> showPartMenu(payload, anchor)
-                }
-            },
-        )
+        rowAdapter = RowAdapter(onClick = ::openPayload, onMore = ::morePayload)
         list.layoutManager = LinearLayoutManager(this)
         list.addItemDecoration(DividerItemDecoration(this, DividerItemDecoration.VERTICAL))
         list.adapter = rowAdapter
 
-        // Spare parts table
+        // Tables (schedule, spare parts, consumables)
         partSort = PartCol.entries.getOrElse(prefs.getInt("part_sort", 0)) { PartCol.NAME }
         partSortAsc = prefs.getBoolean("part_sort_asc", true)
+        schedSort = SchedCol.entries.getOrElse(prefs.getInt("sched_sort", SchedCol.DUE.ordinal)) { SchedCol.DUE }
+        schedSortAsc = prefs.getBoolean("sched_sort_asc", true)
         partsTable = findViewById(R.id.parts_table)
         partsHeader = findViewById(R.id.parts_header)
+        tableList = findViewById(R.id.parts_list)
+        tableList.layoutManager = LinearLayoutManager(this)
+        tableAdapter = TableAdapter(emptyList(), {}, { _, _ -> })
+    }
+
+    /** Sets up the table for a set of columns (only rebuilt when the columns change). */
+    private fun configureTable(key: String, widthsDp: List<Int>) {
+        if (tableKey == key) return
+        tableKey = key
+        val d = resources.displayMetrics.density
+        val widths = widthsDp.map { (it * d).toInt() }
+        tableAdapter = TableAdapter(widths, onClick = ::openPayload, onLongClick = ::morePayload)
+        tableList.adapter = tableAdapter
+        tableList.layoutParams = tableList.layoutParams.apply { width = widths.sum() }
+    }
+
+    /** Column headings; tap one to sort by it, tap again to reverse. */
+    private fun renderTableHeader(labels: List<String>, widthsDp: List<Int>, sortIdx: Int, asc: Boolean, onSort: (Int) -> Unit) {
+        partsHeader.removeAllViews()
         val density = resources.displayMetrics.density
-        val widths = PartCol.entries.map { (it.widthDp * density).toInt() }
-        tableAdapter = TableAdapter(
-            widths,
-            onClick = { p -> showPartDetails(p as SparePart) },
-            onLongClick = { p, v -> showPartMenu(p as SparePart, v) },
-        )
-        findViewById<RecyclerView>(R.id.parts_list).apply {
-            layoutManager = LinearLayoutManager(this@MainActivity)
-            adapter = tableAdapter
-            layoutParams = layoutParams.apply { width = widths.sum() }
+        labels.forEachIndexed { i, label ->
+            partsHeader.addView(TextView(this).apply {
+                layoutParams = LinearLayout.LayoutParams((widthsDp[i] * density).toInt(), LinearLayout.LayoutParams.WRAP_CONTENT)
+                setPadding((10 * density).toInt(), (12 * density).toInt(), (6 * density).toInt(), (12 * density).toInt())
+                text = label + if (i == sortIdx) (if (asc) "  ▲" else "  ▼") else ""
+                setTypeface(null, android.graphics.Typeface.BOLD)
+                val tv = android.util.TypedValue()
+                theme.resolveAttribute(android.R.attr.selectableItemBackground, tv, true)
+                setBackgroundResource(tv.resourceId)
+                setOnClickListener { onSort(i) }
+            })
         }
-        renderPartsHeader()
     }
 
     private fun welcome() {
@@ -475,8 +533,10 @@ class MainActivity : AppCompatActivity() {
         if (overdue > 0) parts += "$overdue overdue"
         if (soon > 0) parts += "$soon due soon"
         if (certAlerts > 0) parts += "$certAlerts certificate alerts"
-        val lowParts = partsInScope().count { store.partStatus(it) != PartStatus.OK }
-        if (lowParts > 0) parts += "$lowParts parts low/out of stock"
+        val lowParts = partsInScope(false).count { store.partStatus(it) != PartStatus.OK }
+        val lowCons = partsInScope(true).count { store.partStatus(it) != PartStatus.OK }
+        if (lowParts > 0) parts += "$lowParts spare parts low/out"
+        if (lowCons > 0) parts += "$lowCons consumables low/out"
         headerInfo.text = parts.joinToString(" · ")
         headerHours.visibility = if (node == null || ship().locked) View.GONE else View.VISIBLE
         if (ship().locked) parts.add(0, "🔒 Locked")
@@ -485,6 +545,7 @@ class MainActivity : AppCompatActivity() {
         tabs.getTabAt(Tab.SCHEDULE.ordinal)?.orCreateBadge?.apply { isVisible = overdue > 0; number = overdue }
         tabs.getTabAt(Tab.CERTS.ordinal)?.orCreateBadge?.apply { isVisible = certBad > 0; number = certBad }
         tabs.getTabAt(Tab.PARTS.ordinal)?.orCreateBadge?.apply { isVisible = lowParts > 0; number = lowParts }
+        tabs.getTabAt(Tab.CONSUMABLES.ordinal)?.orCreateBadge?.apply { isVisible = lowCons > 0; number = lowCons }
     }
 
     private fun <T> fillChips(group: ChipGroup, options: List<T>, selected: T, label: (T) -> String, onPick: (T) -> Unit): Map<T, Chip> {
@@ -515,8 +576,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun refreshChips() {
-        clearChips(chips); clearChips(chips2)
-        dueChips.clear()
+        clearChips(chips); clearChips(chips2); clearChips(chips3)
+        dueChips.clear(); freqChips.clear()
         when (tab) {
             Tab.SCHEDULE -> {
                 fillChips(chips, TypeFilter.entries, typeFilter, { it.label }) {
@@ -524,9 +585,14 @@ class MainActivity : AppCompatActivity() {
                     chips.post { refreshChips(); refreshList() }
                 }
                 if (typeFilter != TypeFilter.DONE) {
-                    dueChips += fillChips(chips2, DueFilter.entries, dueFilter, { it.label }) {
-                        dueFilter = it; refreshList()
+                    dueChips += fillChips(chips2, DueFilter.entries, dueFilter, { dueLabel(it) }) { f ->
+                        if (f == DueFilter.RANGE) pickRange() else { dueFilter = f; refreshList() }
                     }
+                    // Tapping the date range again lets you change it.
+                    dueChips[DueFilter.RANGE]?.setOnClickListener { if (dueFilter == DueFilter.RANGE) pickRange() }
+                }
+                freqChips += fillChips(chips3, FreqFilter.entries, freqFilter, { it.label }) { f ->
+                    freqFilter = f; refreshList()
                 }
             }
             Tab.CERTS -> fillChips(chips, CertFilter.entries, certFilter, { it.label }) {
@@ -543,13 +609,14 @@ class MainActivity : AppCompatActivity() {
                     })
                 }
             }
-            Tab.PARTS -> fillChips(chips, PartFilter.entries, partFilter, { it.label }) {
+            Tab.PARTS, Tab.CONSUMABLES -> fillChips(chips, PartFilter.entries, partFilter, { it.label }) {
                 partFilter = it; refreshList()
             }
             Tab.DOCS -> {}
         }
         (chips.parent as View).visibility = if (chips.childCount > 0) View.VISIBLE else View.GONE
         (chips2.parent as View).visibility = if (chips2.childCount > 0) View.VISIBLE else View.GONE
+        (chips3.parent as View).visibility = if (chips3.childCount > 0) View.VISIBLE else View.GONE
     }
 
     private fun refreshFab() {
@@ -560,6 +627,7 @@ class MainActivity : AppCompatActivity() {
             Tab.HISTORY -> getString(R.string.log_work)
             Tab.CERTS -> getString(R.string.add_cert)
             Tab.PARTS -> getString(R.string.add_part)
+            Tab.CONSUMABLES -> "Add consumable"
         }
     }
 
@@ -579,6 +647,11 @@ class MainActivity : AppCompatActivity() {
     private fun matchesDue(j: Job, f: DueFilter): Boolean = when {
         typeFilter == TypeFilter.DONE || f == DueFilter.ALL -> true
         f == DueFilter.OVERDUE -> store.status(j) == JobStatus.OVERDUE
+        f == DueFilter.RANGE -> {
+            val from = rangeFrom; val to = rangeTo
+            if (from == null || to == null) true
+            else store.daysLeft(j)?.let { it in PmsStore.daysUntil(from)..PmsStore.daysUntil(to) } == true
+        }
         else -> store.daysLeft(j)?.let { it <= f.maxDays!! } == true
     }
 
@@ -590,7 +663,9 @@ class MainActivity : AppCompatActivity() {
                 .sortedBy { it.name.lowercase() }
                 .map { d ->
                     RowItem(
-                        key = d.file.absolutePath, icon = R.drawable.ic_pdf, iconTint = null,
+                        key = d.file.absolutePath,
+                        icon = if (d.isVideo) R.drawable.ic_video else R.drawable.ic_pdf,
+                        iconTint = if (d.isVideo) getColor(R.color.sea) else null,
                         title = d.name,
                         line2 = store.path(d.nodeId),
                         line3 = android.text.format.Formatter.formatShortFileSize(this, d.file.length()) +
@@ -599,40 +674,9 @@ class MainActivity : AppCompatActivity() {
                     )
                 }
 
-            Tab.SCHEDULE -> {
-                val base = store.jobs.filter { it.nodeId in ids && matchesType(it) }
-                // Show how many jobs each "due by" filter would give.
-                dueChips.forEach { (f, chip) ->
-                    val n = base.count { matchesDue(it, f) }
-                    chip.text = if (f == DueFilter.ALL) f.label else "${f.label} ($n)"
-                }
-                base.filter { matchesDue(it, dueFilter) }
-                    .filter { matches(it.title, store.path(it.nodeId), it.instructions) }
-                    .let { l ->
-                        if (typeFilter == TypeFilter.DONE) l.sortedByDescending { it.completed }
-                        else l.sortedWith(compareBy(nullsLast<Long>()) { store.daysLeft(it) })
-                    }
-                    .map { j ->
-                        val status = store.status(j)
-                        RowItem(
-                            key = j.id, icon = R.drawable.ic_build, iconTint = statusColor(status),
-                            title = j.title,
-                            line2 = store.path(j.nodeId),
-                            line3 = describeJob(j),
-                            badge = when (status) {
-                                JobStatus.OVERDUE -> "OVERDUE"; JobStatus.DUE_SOON -> "DUE SOON"
-                                JobStatus.DONE -> "DONE"; JobStatus.OK -> if (!j.recurring) "ONE-TIME" else null
-                            },
-                            color = statusColor(status),
-                            payload = j,
-                        )
-                    }
-            }
+            Tab.SCHEDULE -> emptyList()
 
-            Tab.HISTORY -> store.records
-                .filter { it.nodeId in ids && (historyJobId == null || it.jobId == historyJobId) }
-                .filter { matches(it.title, store.path(it.nodeId), it.doneBy, it.remarks) }
-                .sortedByDescending { it.date }
+            Tab.HISTORY -> historyRecords()
                 .map { r ->
                     val photos = store.photos(r.id).size
                     val meta = listOfNotNull(
@@ -652,7 +696,7 @@ class MainActivity : AppCompatActivity() {
                     )
                 }
 
-            Tab.PARTS -> emptyList()
+            Tab.PARTS, Tab.CONSUMABLES -> emptyList()
 
             Tab.CERTS -> certsInScope()
                 .filter { c ->
@@ -692,19 +736,27 @@ class MainActivity : AppCompatActivity() {
                 }
         }
         rowAdapter.submitList(items)
-        val partRows = if (tab == Tab.PARTS) buildPartRows() else emptyList()
-        tableAdapter.submitList(partRows)
-        list.visibility = if (tab == Tab.PARTS) View.GONE else View.VISIBLE
-        partsTable.visibility = if (tab == Tab.PARTS && partRows.isNotEmpty()) View.VISIBLE else View.GONE
+        val tableRows: List<TableRow>? = when (tab) {
+            Tab.SCHEDULE -> buildScheduleRows()
+            Tab.PARTS -> buildPartRows(false)
+            Tab.CONSUMABLES -> buildPartRows(true)
+            else -> null
+        }
+        tableAdapter.submitList(tableRows.orEmpty())
+        list.visibility = if (tableRows != null) View.GONE else View.VISIBLE
+        partsTable.visibility = if (!tableRows.isNullOrEmpty()) View.VISIBLE else View.GONE
 
-        val shown = if (tab == Tab.PARTS) partRows.size else items.size
+        val shown = tableRows?.size ?: items.size
         empty.visibility = if (shown == 0) View.VISIBLE else View.GONE
         empty.text = when {
             store.subtreeIds(null, shipId).isEmpty() && tab != Tab.CERTS -> "Start by adding your machinery in the Ship structure (☰ menu, top left)."
             query.isNotEmpty() -> "Nothing matches “$query”."
-            tab == Tab.DOCS -> "No documents here yet.\nTap “Upload PDF” to add manuals, drawings or certificates."
+            tab == Tab.DOCS -> "No documents here yet.\nTap “Upload PDF / video” to add manuals, drawings or instruction videos."
             tab == Tab.SCHEDULE && (dueFilter != DueFilter.ALL || typeFilter != TypeFilter.OPEN) -> "No jobs in this list. 👍"
             tab == Tab.SCHEDULE -> "No planned maintenance yet.\nTap “Add job”: recurring (e.g. “Clean filters every 3 months”) or one-time (e.g. a defect found during inspection)."
+            tab == Tab.SCHEDULE && freqFilter != FreqFilter.ALL -> "No jobs in this list. 👍"
+            tab == Tab.CONSUMABLES && (partFilter != PartFilter.ALL) -> "No consumables in this list. 👍"
+            tab == Tab.CONSUMABLES -> "No consumables here yet.\nTap “Add consumable” (e.g. lub oil, chemicals, rags, gasket sheet).\nTip: select the ship at the top of the tree to see all consumables."
             tab == Tab.PARTS && (partFilter != PartFilter.ALL) -> "No spare parts in this list. 👍"
             tab == Tab.PARTS -> "No spare parts here yet.\nTap “Add spare part”. One part can be linked to several units, e.g. the same filter on all generators."
             tab == Tab.CERTS && certFilter != CertFilter.ALL -> "No certificates in this list. 👍"
@@ -864,12 +916,13 @@ class MainActivity : AppCompatActivity() {
         when (tab) {
             Tab.DOCS -> withItem("Upload to which item?") { id ->
                 pendingImportNode = id
-                pickPdfs.launch(arrayOf("application/pdf"))
+                pickPdfs.launch(arrayOf("application/pdf", "video/*"))
             }
             Tab.SCHEDULE -> withItem("Add job to which item?") { id -> showJobDialog(null, id) }
             Tab.HISTORY -> withItem("Log work on which item?") { id -> showRecordDialog(id, null, null) }
             Tab.CERTS -> showCertDialog(null, selectedId)
-            Tab.PARTS -> showPartDialog(null)
+            Tab.PARTS -> showPartDialog(null, consumable = false)
+            Tab.CONSUMABLES -> showPartDialog(null, consumable = true)
         }
     }
 
@@ -1072,9 +1125,11 @@ class MainActivity : AppCompatActivity() {
         PopupMenu(this, anchor).apply {
             val photos = store.photos(rec.id)
             if (photos.isNotEmpty()) menu.add(0, 3, 0, "View photos (${photos.size})")
+            menu.add(0, 4, 0, "PDF report (print / save / share)")
             menu.add(0, 1, 1, "Edit")
             menu.add(0, 2, 2, "Delete")
             setOnMenuItemClickListener { item ->
+                if (item.itemId == 4) { recordPdf(rec); return@setOnMenuItemClickListener true }
                 if (item.itemId != 3 && !canEdit()) return@setOnMenuItemClickListener true
                 when (item.itemId) {
                     3 -> openFiles(photos, 0, rec.title)
@@ -1488,6 +1543,326 @@ class MainActivity : AppCompatActivity() {
     }
 
     // =====================================================================
+    // Schedule table, date range, frequency groups
+    // =====================================================================
+
+    private fun freqGroup(j: Job): FreqFilter {
+        if (!j.recurring) return FreqFilter.ONCE
+        if (j.unit == IntervalUnit.HOURS) return FreqFilter.HOURS
+        val days = approxDays(j)
+        return when {
+            days <= 14 -> FreqFilter.WEEKLY
+            days <= 62 -> FreqFilter.MONTHLY
+            days <= 125 -> FreqFilter.QUARTERLY
+            days <= 190 -> FreqFilter.HALF
+            days <= 370 -> FreqFilter.ANNUAL
+            else -> FreqFilter.MULTI
+        }
+    }
+
+    /** Interval length in days (approximate), for sorting by frequency. Running hours go last. */
+    private fun approxDays(j: Job): Int = when {
+        !j.recurring -> 0
+        j.unit == IntervalUnit.HOURS -> 100_000 + j.intervalValue
+        else -> j.intervalValue * when (j.unit) {
+            IntervalUnit.DAYS -> 1
+            IntervalUnit.WEEKS -> 7
+            IntervalUnit.MONTHS -> 30
+            else -> 365
+        }
+    }
+
+    private fun shortDate(t: Long): String = DateFormat.getDateInstance(DateFormat.SHORT).format(Date(t))
+
+    private fun dueLabel(f: DueFilter): String {
+        if (f != DueFilter.RANGE) return f.label
+        val from = rangeFrom
+        val to = rangeTo
+        return if (from == null || to == null) "📅 Date range…" else "📅 ${shortDate(from)} – ${shortDate(to)}"
+    }
+
+    /** Material date-range picker. The picker works in UTC days, the app in local time. */
+    private fun pickRange() {
+        val utc = java.util.TimeZone.getTimeZone("UTC")
+        fun toUtc(local: Long): Long {
+            val l = Calendar.getInstance().apply { timeInMillis = local }
+            return Calendar.getInstance(utc).apply {
+                clear(); set(l.get(Calendar.YEAR), l.get(Calendar.MONTH), l.get(Calendar.DAY_OF_MONTH))
+            }.timeInMillis
+        }
+        fun toLocal(u: Long): Long {
+            val c = Calendar.getInstance(utc).apply { timeInMillis = u }
+            return Calendar.getInstance().apply {
+                set(c.get(Calendar.YEAR), c.get(Calendar.MONTH), c.get(Calendar.DAY_OF_MONTH), 12, 0, 0)
+                set(Calendar.MILLISECOND, 0)
+            }.timeInMillis
+        }
+        val from = rangeFrom
+        val to = rangeTo
+        val selection = if (from != null && to != null) androidx.core.util.Pair(toUtc(from), toUtc(to))
+        else androidx.core.util.Pair(toUtc(System.currentTimeMillis()), toUtc(System.currentTimeMillis() + 30 * PmsStore.DAY))
+        val picker = com.google.android.material.datepicker.MaterialDatePicker.Builder.dateRangePicker()
+            .setTitleText("Jobs due between")
+            .setSelection(selection)
+            .build()
+        picker.addOnPositiveButtonClickListener { sel ->
+            val a = sel.first
+            val b = sel.second
+            if (a != null && b != null) {
+                rangeFrom = toLocal(a)
+                rangeTo = toLocal(b)
+                dueFilter = DueFilter.RANGE
+            }
+        }
+        picker.addOnDismissListener { refreshChips(); refreshList() }
+        picker.show(supportFragmentManager, "range")
+    }
+
+    private fun schedCell(j: Job, c: SchedCol): String {
+        val status = store.status(j)
+        return when (c) {
+            SchedCol.STATUS -> when (status) {
+                JobStatus.OVERDUE -> "OVERDUE"
+                JobStatus.DUE_SOON -> "DUE SOON"
+                JobStatus.OK -> "OK"
+                JobStatus.DONE -> "DONE"
+            }
+            SchedCol.JOB -> j.title
+            SchedCol.UNIT -> store.path(j.nodeId)
+            SchedCol.FREQ -> if (j.recurring) freqLabel(j.intervalValue, j.unit) else "One-time"
+            SchedCol.LAST -> when {
+                !j.recurring -> j.completed?.let { "Done ${shortDate(it)}" } ?: "–"
+                j.unit == IntervalUnit.HOURS -> shortDate(j.lastDoneDate) + (j.lastDoneHours?.let { "\n@ ${numFmt.format(it)} h" } ?: "")
+                else -> shortDate(j.lastDoneDate)
+            }
+            SchedCol.DUE -> when {
+                status == JobStatus.DONE -> "–"
+                store.isHours(j) -> "${numFmt.format(store.dueHours(j))} h"
+                else -> store.dueDate(j)?.let { shortDate(it) } ?: "–"
+            }
+            SchedCol.LEFT -> when {
+                status == JobStatus.DONE -> "–"
+                store.isHours(j) -> store.hoursLeft(j)?.let { if (it >= 0) "${numFmt.format(it)} h left" else "${numFmt.format(-it)} h over" } ?: "no hours"
+                else -> store.dueDate(j)?.let { inDays(PmsStore.daysUntil(it)) } ?: "–"
+            }
+        }
+    }
+
+    private fun schedComparator(): Comparator<Job> {
+        val byDays: Comparator<Job> = compareBy(nullsLast<Long>()) { store.daysLeft(it) }
+        val base: Comparator<Job> = when (schedSort) {
+            SchedCol.STATUS -> compareBy<Job> { store.status(it).ordinal }.then(byDays)
+            SchedCol.JOB -> compareBy<Job> { it.title.lowercase() }
+            SchedCol.UNIT -> compareBy<Job> { store.path(it.nodeId).lowercase() }
+            SchedCol.FREQ -> compareBy<Job> { approxDays(it) }
+            SchedCol.LAST -> compareBy<Job> { if (it.recurring) it.lastDoneDate else (it.completed ?: 0L) }
+            SchedCol.DUE, SchedCol.LEFT -> if (typeFilter == TypeFilter.DONE) compareBy<Job> { it.completed ?: 0L } else byDays
+        }
+        return (if (schedSortAsc) base else base.reversed()).thenBy { it.title.lowercase() }
+    }
+
+    private fun buildScheduleRows(): List<TableRow> {
+        val cols = SchedCol.entries
+        configureTable("schedule", cols.map { it.widthDp })
+        renderTableHeader(cols.map { it.label }, cols.map { it.widthDp }, schedSort.ordinal, schedSortAsc) { i ->
+            val c = cols[i]
+            if (schedSort == c) schedSortAsc = !schedSortAsc else { schedSort = c; schedSortAsc = true }
+            prefs.edit().putInt("sched_sort", schedSort.ordinal).putBoolean("sched_sort_asc", schedSortAsc).apply()
+            refreshList()
+        }
+        val ids = store.subtreeIds(selectedId, shipId)
+        val typed = store.jobs.filter { it.nodeId in ids && matchesType(it) }
+        // Counts shown on the filter chips.
+        dueChips.forEach { (f, chip) ->
+            val n = typed.count { (freqFilter == FreqFilter.ALL || freqGroup(it) == freqFilter) && matchesDue(it, f) }
+            chip.text = if (f == DueFilter.ALL || (f == DueFilter.RANGE && rangeFrom == null)) dueLabel(f) else "${dueLabel(f)} ($n)"
+        }
+        freqChips.forEach { (f, chip) ->
+            val n = typed.count { matchesDue(it, dueFilter) && (f == FreqFilter.ALL || freqGroup(it) == f) }
+            chip.text = if (f == FreqFilter.ALL) f.label else "${f.label} ($n)"
+        }
+        return typed
+            .filter { matchesDue(it, dueFilter) && (freqFilter == FreqFilter.ALL || freqGroup(it) == freqFilter) }
+            .filter { matches(it.title, store.path(it.nodeId), it.instructions) }
+            .sortedWith(schedComparator())
+            .map { j ->
+                TableRow(
+                    key = j.id,
+                    cells = cols.map { schedCell(j, it) },
+                    accent = statusColor(store.status(j)),
+                    accentCol = SchedCol.STATUS.ordinal,
+                    payload = j,
+                )
+            }
+    }
+
+    // =====================================================================
+    // PDF reports (A4): work done, schedule, inventory
+    // =====================================================================
+
+    private fun historyRecords(): List<WorkRecord> {
+        val ids = store.subtreeIds(selectedId, shipId)
+        return store.records
+            .filter { it.nodeId in ids && (historyJobId == null || it.jobId == historyJobId) }
+            .filter { matches(it.title, store.path(it.nodeId), it.doneBy, it.remarks) }
+            .sortedByDescending { it.date }
+    }
+
+    private fun shipLine(): String = ship().name + (ship().imo.takeIf { it.isNotBlank() }?.let { "  ·  IMO $it" } ?: "")
+
+    private fun stamp(t: Long = System.currentTimeMillis()): String = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(t))
+
+    private fun PdfBuilder.recordSection(r: WorkRecord, withPhotos: Boolean) {
+        val job = store.jobs.firstOrNull { it.id == r.jobId }
+        heading(r.title)
+        fields(
+            listOf(
+                "Ship" to shipLine(),
+                "Unit" to store.path(r.nodeId),
+                "Job" to (job?.let { it.title + " – " + (if (it.recurring) freqLabel(it.intervalValue, it.unit) else "one-time") }
+                    ?: "Unplanned / corrective work"),
+                "Date" to dateFmt.format(Date(r.date)),
+                "Done by" to r.doneBy,
+                "Running hours" to (r.hours?.let { numFmt.format(it) + " h" } ?: ""),
+                "Remarks" to r.remarks,
+            )
+        )
+        if (r.partsUsed.isNotEmpty()) {
+            text("Spare parts / consumables used", 10.5f, bold = true)
+            table(
+                listOf("Item" to 3f, "Part no. / code" to 2f, "Qty" to 0.8f, "Unit" to 0.8f),
+                r.partsUsed.map { u ->
+                    val p = store.part(u.partId)
+                    listOf(p?.name ?: "deleted item", p?.partNumber.orEmpty(), u.qty.toString(), p?.unit.orEmpty())
+                },
+            )
+        }
+        if (withPhotos) {
+            val caps = store.captions(store.photoDir(r.id))
+            store.photos(r.id).filter { Images.isImage(it) }.forEachIndexed { i, f ->
+                photo(f, "Photo ${i + 1}" + (caps[f.name]?.takeIf { it.isNotBlank() }?.let { ": $it" } ?: ""))
+            }
+        }
+    }
+
+    private fun recordPdf(r: WorkRecord) {
+        generatePdf("Work report ${stamp(r.date)} ${r.title}", "Work Done Report") {
+            title("Work Done Report")
+            recordSection(r, withPhotos = true)
+            signatures("Done by", "Checked by (Chief Engineer)", "Master")
+        }
+    }
+
+    /** "PDF report" toolbar action: a printable A4 version of the list on screen. */
+    private fun pdfOfCurrentList() {
+        when (tab) {
+            Tab.HISTORY -> {
+                val recs = historyRecords()
+                if (recs.isEmpty()) { toast("No work records in this list"); return }
+                MaterialAlertDialogBuilder(this)
+                    .setTitle("Work done report – ${recs.size} records")
+                    .setMessage("Include the photos of each job? (Larger file, more pages.)")
+                    .setPositiveButton("With photos") { _, _ -> historyPdf(recs, true) }
+                    .setNegativeButton("Table only") { _, _ -> historyPdf(recs, false) }
+                    .setNeutralButton(R.string.cancel, null)
+                    .show()
+            }
+            Tab.SCHEDULE, Tab.PARTS, Tab.CONSUMABLES -> {
+                val (heads, filters, rows) = currentTable()
+                if (rows.isEmpty()) { toast("The list is empty"); return }
+                val widths = if (tab == Tab.SCHEDULE) SchedCol.entries.map { it.widthDp } else PartCol.entries.map { it.widthDp }
+                val name = if (tab == Tab.SCHEDULE) "Maintenance Schedule" else tab.label
+                val scope = headerPath.text.toString()
+                generatePdf("$name ${stamp()}", name) {
+                    title(name)
+                    text(shipLine(), 11f, bold = true)
+                    text("$scope  ·  $filters  ·  ${rows.size} entries", 9.5f, color = android.graphics.Color.DKGRAY)
+                    gap(4f)
+                    table(
+                        heads.mapIndexed { i, h -> h to widths[i].toFloat() },
+                        rows.map { r -> r.cells.map { it.replace("\n", " ") } },
+                        fontSize = 8f,
+                        accent = { i ->
+                            val p = rows[i].payload
+                            when {
+                                p is Job && store.status(p).let { it == JobStatus.OVERDUE || it == JobStatus.DUE_SOON } -> rows[i].accent
+                                p is SparePart -> rows[i].accent
+                                else -> null
+                            }
+                        },
+                    )
+                }
+            }
+            else -> toast("PDF reports are available on Schedule, Work done, Spare parts and Consumables. For one work record use its ⋮ menu.")
+        }
+    }
+
+    private fun historyPdf(recs: List<WorkRecord>, withPhotos: Boolean) {
+        val scope = headerPath.text.toString()
+        generatePdf("Work done ${stamp()}", "Work Done Report") {
+            title("Work Done Report")
+            text(shipLine(), 11f, bold = true)
+            val first = recs.minOf { it.date }
+            val last = recs.maxOf { it.date }
+            text("$scope  ·  ${recs.size} records  ·  ${dateFmt.format(Date(first))} – ${dateFmt.format(Date(last))}", 9.5f, color = android.graphics.Color.DKGRAY)
+            gap(4f)
+            table(
+                listOf("Date" to 1.1f, "Unit" to 2f, "Work done" to 2.6f, "Done by" to 1.2f, "Hours" to 0.9f, "Parts used" to 1.8f),
+                recs.map { r ->
+                    listOf(
+                        shortDate(r.date),
+                        store.path(r.nodeId),
+                        r.title + if (r.remarks.isNotBlank()) "\n" + r.remarks else "",
+                        r.doneBy,
+                        r.hours?.let { numFmt.format(it) }.orEmpty(),
+                        r.partsUsed.joinToString("\n") { u -> "${u.qty} × ${store.part(u.partId)?.name ?: "?"}" },
+                    )
+                },
+                fontSize = 8.5f,
+            )
+            if (withPhotos) recs.forEach { r -> if (store.photos(r.id).isNotEmpty()) recordSection(r, withPhotos = true) }
+            signatures("Prepared by", "Chief Engineer", "Master")
+        }
+    }
+
+    /** Builds a PDF in the background, then offers View / Print / Save / Share. */
+    private fun generatePdf(fileName: String, title: String, build: PdfBuilder.() -> Unit) {
+        progress.visibility = View.VISIBLE
+        val safe = fileName.replace(Regex("[\\\\/:*?\"<>|\\n\\r\\t]"), "_").take(80)
+        val shipName = ship().name
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val f = File(File(cacheDir, "reports").apply { mkdirs() }, "$safe.pdf")
+                    val b = PdfBuilder(title, shipName)
+                    b.build()
+                    b.writeTo(f)
+                    f to b.pageCount
+                }
+            }
+            progress.visibility = View.GONE
+            result.onSuccess { (f, pages) -> showPdfReady(f, pages, title) }
+                .onFailure { toast("Could not create the PDF: ${it.message}") }
+        }
+    }
+
+    private fun showPdfReady(f: File, pages: Int, title: String) {
+        val options = arrayOf("👁  View", "🖨  Print", "💾  Save to phone…", "↗  Share")
+        MaterialAlertDialogBuilder(this)
+            .setTitle("$title ready · $pages page${if (pages == 1) "" else "s"} (A4)")
+            .setItems(options) { _, i ->
+                when (i) {
+                    0 -> startActivity(Intent(this, PdfViewerActivity::class.java).putExtra(PdfViewerActivity.EXTRA_PATH, f.absolutePath))
+                    1 -> printPdf(this, f, f.nameWithoutExtension)
+                    2 -> { pendingPdf = f; savePdf.launch(f.name) }
+                    3 -> shareFile(this, f)
+                }
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    // =====================================================================
     // Spare parts
     // =====================================================================
 
@@ -1516,7 +1891,25 @@ class MainActivity : AppCompatActivity() {
         return ordered.thenBy { it.name.lowercase() }
     }
 
-    private fun buildPartRows(): List<TableRow> = partsInScope()
+    private fun buildPartRows(consumable: Boolean): List<TableRow> {
+        val cols = PartCol.entries
+        configureTable("parts", cols.map { it.widthDp })
+        renderTableHeader(cols.map { partColLabel(it, consumable) }, cols.map { it.widthDp }, partSort.ordinal, partSortAsc) { i ->
+            val c = cols[i]
+            if (partSort == c) partSortAsc = !partSortAsc else { partSort = c; partSortAsc = c != PartCol.STOCK }
+            prefs.edit().putInt("part_sort", partSort.ordinal).putBoolean("part_sort_asc", partSortAsc).apply()
+            refreshList()
+        }
+        return partRows(consumable)
+    }
+
+    private fun partColLabel(c: PartCol, consumable: Boolean) = when {
+        consumable && c == PartCol.NAME -> "Consumable"
+        consumable && c == PartCol.NUMBER -> "Code / part no."
+        else -> c.label
+    }
+
+    private fun partRows(consumable: Boolean): List<TableRow> = partsInScope(consumable)
         .filter { p ->
             when (partFilter) {
                 PartFilter.ALL -> true
@@ -1541,32 +1934,9 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
-    /** Column headings; tap one to sort by it, tap again to reverse. */
-    private fun renderPartsHeader() {
-        partsHeader.removeAllViews()
-        val density = resources.displayMetrics.density
-        PartCol.entries.forEach { c ->
-            partsHeader.addView(TextView(this).apply {
-                layoutParams = LinearLayout.LayoutParams((c.widthDp * density).toInt(), LinearLayout.LayoutParams.WRAP_CONTENT)
-                setPadding((10 * density).toInt(), (12 * density).toInt(), (6 * density).toInt(), (12 * density).toInt())
-                text = c.label + if (c == partSort) (if (partSortAsc) "  ▲" else "  ▼") else ""
-                setTypeface(null, android.graphics.Typeface.BOLD)
-                val tv = android.util.TypedValue()
-                theme.resolveAttribute(android.R.attr.selectableItemBackground, tv, true)
-                setBackgroundResource(tv.resourceId)
-                setOnClickListener {
-                    if (partSort == c) partSortAsc = !partSortAsc else { partSort = c; partSortAsc = c != PartCol.STOCK }
-                    prefs.edit().putInt("part_sort", partSort.ordinal).putBoolean("part_sort_asc", partSortAsc).apply()
-                    renderPartsHeader()
-                    refreshList()
-                }
-            })
-        }
-    }
-
     /** Parts linked to the selected part of the ship; with the ship selected, all of its parts. */
-    private fun partsInScope(): List<SparePart> {
-        val shipParts = store.parts.filter { it.shipId == shipId }
+    private fun partsInScope(consumable: Boolean): List<SparePart> {
+        val shipParts = store.parts.filter { it.shipId == shipId && it.consumable == consumable }
         if (selectedId == null) return shipParts
         val ids = store.subtreeIds(selectedId, shipId)
         return shipParts.filter { p -> p.nodeIds.any { it in ids } }
@@ -1605,7 +1975,7 @@ class MainActivity : AppCompatActivity() {
         options += "Link to units…" to {
             if (canEdit()) chooseUnits(p.nodeIds) { ids -> p.nodeIds.clear(); p.nodeIds += ids; store.save(); refresh() }
         }
-        options += "Delete part" to {
+        options += "Delete" to {
             if (canEdit()) MaterialAlertDialogBuilder(this)
                 .setTitle("Delete “${p.name}”?")
                 .setMessage("Its stock history and photos are deleted too. Work records that used it keep their text.")
@@ -1704,16 +2074,17 @@ class MainActivity : AppCompatActivity() {
      */
     private fun choosePartForUnit(nodeId: String, onPick: (SparePart) -> Unit) {
         val all = store.parts.filter { it.shipId == shipId }.sortedBy { it.name.lowercase() }
-        if (all.isEmpty()) { toast("No spare parts yet. Add them in the Spare parts tab."); return }
+        if (all.isEmpty()) { toast("No spare parts or consumables yet. Add them in their tabs."); return }
         val related = mutableSetOf(nodeId)
         var p = store.node(nodeId)?.parentId
         while (p != null) { related += p; p = store.node(p)?.parentId }
         related += store.subtreeIds(nodeId, shipId)
         val linked = all.filter { part -> part.nodeIds.any { it in related } }
         fun pickFrom(list: List<SparePart>, showAllOption: Boolean) {
-            val labels = list.map { "${it.name}  (${it.quantity} ${it.unit})" } + if (showAllOption) listOf("Show all spare parts…") else emptyList()
+            val labels = list.map { "${it.name}  (${it.quantity} ${it.unit})" + if (it.consumable) " · consumable" else "" } +
+                if (showAllOption) listOf("Show all spare parts & consumables…") else emptyList()
             MaterialAlertDialogBuilder(this)
-                .setTitle(if (showAllOption) "Parts for ${store.node(nodeId)?.name}" else "All spare parts")
+                .setTitle(if (showAllOption) "For ${store.node(nodeId)?.name}" else "All spare parts & consumables")
                 .setItems(labels.toTypedArray()) { _, i ->
                     if (i < list.size) onPick(list[i]) else pickFrom(all, false)
                 }
@@ -1723,7 +2094,7 @@ class MainActivity : AppCompatActivity() {
         if (linked.isEmpty()) pickFrom(all, false) else pickFrom(linked, true)
     }
 
-    private fun showPartDialog(existing: SparePart?) {
+    private fun showPartDialog(existing: SparePart?, consumable: Boolean = existing?.consumable ?: false) {
         val v = layoutInflater.inflate(R.layout.dialog_part, null)
         val nameLayout = v.findViewById<TextInputLayout>(R.id.part_name_layout)
         val name = v.findViewById<TextInputEditText>(R.id.part_name)
@@ -1737,7 +2108,11 @@ class MainActivity : AppCompatActivity() {
         val linkedGroup = v.findViewById<ChipGroup>(R.id.linked_units)
 
         val partId = existing?.id ?: PmsStore.newId()
-        val files = FileSession(v, store.partDir(partId), store.partFiles(partId), "Photos (optional)", allowPdf = true, title = "Spare part")
+        val files = FileSession(v, store.partDir(partId), store.partFiles(partId), "Photos (optional)", allowPdf = true, title = if (consumable) "Consumable" else "Spare part")
+        if (consumable) {
+            nameLayout.hint = "Consumable (e.g. Lub oil SAE 40, rags, gasket sheet)"
+            v.findViewById<TextInputLayout>(R.id.part_number_layout).hint = "Code / part no. (optional)"
+        }
         val links = (existing?.nodeIds ?: listOfNotNull(selectedId)).toMutableSet()
 
         fun renderLinks() {
@@ -1765,7 +2140,12 @@ class MainActivity : AppCompatActivity() {
         remarks.setText(existing?.remarks)
 
         val dialog = MaterialAlertDialogBuilder(this)
-            .setTitle(if (existing == null) "New spare part" else "Edit spare part")
+            .setTitle(when {
+                existing == null && consumable -> "New consumable"
+                existing == null -> "New spare part"
+                consumable -> "Edit consumable"
+                else -> "Edit spare part"
+            })
             .setView(v)
             .setPositiveButton(R.string.save, null)
             .setNegativeButton(R.string.cancel, null)
@@ -1774,7 +2154,7 @@ class MainActivity : AppCompatActivity() {
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 val n = name.text.toString().trim()
-                nameLayout.error = if (n.isEmpty()) "Enter the part name" else null
+                nameLayout.error = if (n.isEmpty()) "Enter the name" else null
                 if (n.isEmpty()) return@setOnClickListener
                 files.commit()
                 val loc = location.text.toString().trim()
@@ -1790,6 +2170,7 @@ class MainActivity : AppCompatActivity() {
                         unit = unit.text.toString().trim().ifEmpty { "pcs" },
                         remarks = remarks.text.toString().trim(),
                         nodeIds = links.toMutableSet(),
+                        consumable = consumable,
                     )
                 )
                 dialog.dismiss()
@@ -1817,6 +2198,7 @@ class MainActivity : AppCompatActivity() {
         private val title: String,
     ) {
         val files = existing.toMutableList()
+        val captions = store.captions(dir).toMutableMap()
         private val added = mutableListOf<File>()
         private val removed = mutableListOf<File>()
         private var saved = false
@@ -1853,6 +2235,7 @@ class MainActivity : AppCompatActivity() {
         fun commit() {
             saved = true
             removed.forEach { it.delete() }
+            store.saveCaptions(dir, captions)
         }
 
         fun showError(msg: String) {
@@ -1860,35 +2243,71 @@ class MainActivity : AppCompatActivity() {
             error.visibility = View.VISIBLE
         }
 
-        private fun render() {
+        fun render() {
             label.text = "$labelText · ${files.size}"
             strip.removeAllViews()
-            val size = (76 * resources.displayMetrics.density).toInt()
-            val margin = (6 * resources.displayMetrics.density).toInt()
+            val d = resources.displayMetrics.density
+            val size = (84 * d).toInt()
             files.forEachIndexed { index, f ->
-                val iv = ImageView(this@MainActivity).apply {
-                    layoutParams = LinearLayout.LayoutParams(size, size).apply { marginEnd = margin; bottomMargin = margin }
+                val cell = LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.VERTICAL
+                    layoutParams = LinearLayout.LayoutParams(size, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                        marginEnd = (6 * d).toInt(); bottomMargin = (6 * d).toInt()
+                    }
+                    setOnClickListener { fileMenu(f, index) }
+                }
+                cell.addView(ImageView(this@MainActivity).apply {
+                    layoutParams = LinearLayout.LayoutParams(size, size)
                     scaleType = ImageView.ScaleType.CENTER_CROP
                     setBackgroundColor(0x22888888)
                     contentDescription = f.name
                     if (Images.isImage(f)) setImageBitmap(Images.thumbnail(f, size))
                     else { setImageResource(R.drawable.ic_pdf); scaleType = ImageView.ScaleType.CENTER_INSIDE }
-                    setOnClickListener { openFiles(files.toList(), index, title) }
-                    setOnLongClickListener {
-                        MaterialAlertDialogBuilder(this@MainActivity)
-                            .setMessage("Remove this ${if (Images.isImage(f)) "photo" else "file"}?")
-                            .setPositiveButton("Remove") { _, _ ->
-                                files.remove(f)
-                                if (added.remove(f)) f.delete() else removed += f
-                                render()
-                            }
-                            .setNegativeButton(R.string.cancel, null)
-                            .show()
-                        true
-                    }
-                }
-                strip.addView(iv)
+                })
+                cell.addView(TextView(this@MainActivity).apply {
+                    text = captions[f.name]?.takeIf { it.isNotBlank() } ?: "+ description"
+                    alpha = if (captions[f.name].isNullOrBlank()) 0.55f else 1f
+                    textSize = 11f
+                    maxLines = 2
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                })
+                strip.addView(cell)
             }
+        }
+
+        /** View, mark up (draw on), describe or remove a photo/file. */
+        private fun fileMenu(f: File, index: Int) {
+            val image = Images.isImage(f)
+            val options = mutableListOf<Pair<String, () -> Unit>>()
+            options += "View" to { openFiles(files.toList(), index, title, captions) }
+            if (image) options += "✎ Mark up (draw arrows, circles, text)" to {
+                annotate.launch(Intent(this@MainActivity, AnnotateActivity::class.java).putExtra(AnnotateActivity.EXTRA_PATH, f.absolutePath))
+            }
+            options += "Description…" to {
+                promptText(
+                    "Description", captions[f.name].orEmpty(), "e.g. Worn bearing found on DE side",
+                    InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES, allowEmpty = true,
+                ) { t ->
+                    if (t.isBlank()) captions.remove(f.name) else captions[f.name] = t
+                    render()
+                }
+            }
+            options += "Remove" to {
+                MaterialAlertDialogBuilder(this@MainActivity)
+                    .setMessage("Remove this ${if (image) "photo" else "file"}?")
+                    .setPositiveButton("Remove") { _, _ ->
+                        files.remove(f)
+                        captions.remove(f.name)
+                        if (added.remove(f)) f.delete() else removed += f
+                        render()
+                    }
+                    .setNegativeButton(R.string.cancel, null)
+                    .show()
+            }
+            MaterialAlertDialogBuilder(this@MainActivity)
+                .setTitle(captions[f.name]?.takeIf { it.isNotBlank() } ?: if (image) "Photo ${index + 1}" else f.name)
+                .setItems(options.map { it.first }.toTypedArray()) { _, i -> options[i].second() }
+                .show()
         }
     }
 
@@ -1919,13 +2338,17 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** Opens a PDF in the PDF viewer, or photos in the photo viewer. */
-    private fun openFiles(files: List<File>, index: Int, title: String) {
+    private fun openFiles(files: List<File>, index: Int, title: String, captions: Map<String, String>? = null) {
         val file = files.getOrNull(index) ?: return
-        if (Images.isImage(file)) {
+        if (file.extension.lowercase() in VIDEO_EXT) {
+            startActivity(Intent(this, VideoPlayerActivity::class.java).putExtra(VideoPlayerActivity.EXTRA_PATH, file.absolutePath))
+        } else if (Images.isImage(file)) {
             val images = files.filter { Images.isImage(it) }
+            val caps = captions ?: file.parentFile?.let { store.captions(it) }.orEmpty()
             startActivity(
                 Intent(this, PhotoViewerActivity::class.java)
                     .putStringArrayListExtra(PhotoViewerActivity.EXTRA_PATHS, ArrayList(images.map { it.absolutePath }))
+                    .putStringArrayListExtra(PhotoViewerActivity.EXTRA_CAPTIONS, ArrayList(images.map { caps[it.name].orEmpty() }))
                     .putExtra(PhotoViewerActivity.EXTRA_INDEX, images.indexOf(file))
                     .putExtra(PhotoViewerActivity.EXTRA_TITLE, title)
             )
@@ -1984,7 +2407,7 @@ class MainActivity : AppCompatActivity() {
         if (uris.isEmpty() || !canEdit()) return
         tabs.getTabAt(Tab.DOCS.ordinal)?.select()
         if (store.subtreeIds(null, shipId).isEmpty()) store.addNode(null, "General documents", shipId)
-        chooseNode("Save ${uris.size} PDF${if (uris.size > 1) "s" else ""} to") { id -> importAll(uris, id) }
+        chooseNode("Save ${uris.size} file${if (uris.size > 1) "s" else ""} to") { id -> importAll(uris, id) }
     }
 
     private fun importAll(uris: List<Uri>, nodeId: String) {
@@ -2007,7 +2430,7 @@ class MainActivity : AppCompatActivity() {
 
     /** Shares what is on screen (e.g. "One-time jobs due within a week") as plain text. */
     private fun shareCurrentList() {
-        if (tab == Tab.PARTS) { sharePartsTable(); return }
+        if (tab == Tab.PARTS || tab == Tab.CONSUMABLES || tab == Tab.SCHEDULE) { shareTable(); return }
         val items = rowAdapter.currentList
         if (items.isEmpty()) { toast("The list is empty"); return }
         val filters = when (tab) {
@@ -2034,20 +2457,41 @@ class MainActivity : AppCompatActivity() {
         startActivity(Intent.createChooser(send, "Share list"))
     }
 
-    /** Shares the spare parts table as text (one line per part, columns separated by "|"). */
-    private fun sharePartsTable() {
+    /** Headings, filter description and rows of the table on screen. */
+    private fun currentTable(): Triple<List<String>, String, List<TableRow>> {
         val rows = tableAdapter.currentList
+        return when (tab) {
+            Tab.SCHEDULE -> Triple(SchedCol.entries.map { it.label }, scheduleFilterText(), rows)
+            else -> Triple(
+                PartCol.entries.map { partColLabel(it, tab == Tab.CONSUMABLES) },
+                partFilter.label + " · sorted by " + partColLabel(partSort, tab == Tab.CONSUMABLES) + (if (partSortAsc) " ▲" else " ▼") +
+                    (query.takeIf { it.isNotEmpty() }?.let { " · “$it”" } ?: ""),
+                rows,
+            )
+        }
+    }
+
+    private fun scheduleFilterText(): String = listOfNotNull(
+        typeFilter.label,
+        dueFilter.takeIf { typeFilter != TypeFilter.DONE && it != DueFilter.ALL }?.let { dueLabel(it) },
+        freqFilter.takeIf { it != FreqFilter.ALL }?.label,
+        query.takeIf { it.isNotEmpty() }?.let { "“$it”" },
+        "sorted by " + schedSort.label + if (schedSortAsc) " ▲" else " ▼",
+    ).joinToString(" · ")
+
+    /** Shares the table on screen as text (one line per row, columns separated by "|"). */
+    private fun shareTable() {
+        val (heads, filters, rows) = currentTable()
         if (rows.isEmpty()) { toast("The list is empty"); return }
         val text = buildString {
-            append("Spare parts – ${headerPath.text}\n")
-            append(partFilter.label + " · sorted by " + partSort.label + (if (partSortAsc) " ▲" else " ▼"))
-            query.takeIf { it.isNotEmpty() }?.let { append(" · “$it”") }
-            append("\n").append(dateFmt.format(Date())).append(" · ${rows.size} parts\n\n")
-            append(PartCol.entries.joinToString(" | ") { it.label }).append('\n')
-            rows.forEach { r -> append(r.cells.joinToString(" | ") { it.ifEmpty { "–" } }).append('\n') }
+            append("${tab.label} – ${headerPath.text}\n")
+            append(filters).append('\n')
+            append(dateFmt.format(Date())).append(" · ${rows.size} entries\n\n")
+            append(heads.joinToString(" | ")).append('\n')
+            rows.forEach { r -> append(r.cells.joinToString(" | ") { it.replace('\n', ' ').ifEmpty { "–" } }).append('\n') }
         }
         val send = Intent(Intent.ACTION_SEND).setType("text/plain")
-            .putExtra(Intent.EXTRA_SUBJECT, "Spare parts – ${ship().name}")
+            .putExtra(Intent.EXTRA_SUBJECT, "${tab.label} – ${ship().name}")
             .putExtra(Intent.EXTRA_TEXT, text)
         startActivity(Intent.createChooser(send, "Share list"))
     }

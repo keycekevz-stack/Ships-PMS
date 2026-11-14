@@ -40,6 +40,8 @@ data class SparePart(
     var unit: String,
     var remarks: String,
     val nodeIds: MutableSet<String> = mutableSetOf(),
+    /** true = consumable (oil, chemicals, rags…), false = spare part. */
+    var consumable: Boolean = false,
 )
 
 /** A change in stock: negative = taken out / used, positive = received. */
@@ -123,8 +125,11 @@ data class Certificate(
     var shipId: String = "",
 )
 
+val VIDEO_EXT = setOf("mp4", "m4v", "mov", "3gp", "mkv", "webm", "avi")
+
 data class Doc(val file: File, val nodeId: String) {
     val name: String get() = file.nameWithoutExtension
+    val isVideo: Boolean get() = file.extension.lowercase() in VIDEO_EXT
 }
 
 /**
@@ -263,6 +268,7 @@ class PmsStore private constructor(context: Context) {
                 remarks = o.optString("remarks"),
                 nodeIds = o.optJSONArray("nodeIds")?.let { a -> (0 until a.length()).map { a.getString(it) }.toMutableSet() }
                     ?: mutableSetOf(),
+                consumable = o.optBoolean("consumable", false),
             )
         }
         root.optJSONArray("moves")?.forEachObject { o ->
@@ -324,7 +330,8 @@ class PmsStore private constructor(context: Context) {
                     put(JSONObject().put("id", it.id).put("shipId", it.shipId).put("name", it.name)
                         .put("partNumber", it.partNumber).put("maker", it.maker).put("location", it.location)
                         .put("quantity", it.quantity).put("minQuantity", it.minQuantity).put("unit", it.unit)
-                        .put("remarks", it.remarks).put("nodeIds", JSONArray(it.nodeIds.toList())))
+                        .put("remarks", it.remarks).put("nodeIds", JSONArray(it.nodeIds.toList()))
+                        .put("consumable", it.consumable))
                 }
             })
             .put("moves", JSONArray().apply {
@@ -628,8 +635,7 @@ class PmsStore private constructor(context: Context) {
 
     fun partDir(partId: String) = File(partsRoot, partId)
 
-    fun partFiles(partId: String): List<File> =
-        partDir(partId).listFiles { f -> f.isFile }?.sortedBy { it.name }.orEmpty()
+    fun partFiles(partId: String): List<File> = visibleFiles(partDir(partId))
 
     fun partStatus(p: SparePart): PartStatus = when {
         p.quantity <= 0 -> PartStatus.OUT
@@ -670,15 +676,13 @@ class PmsStore private constructor(context: Context) {
 
     fun photoDir(recordId: String) = File(photosRoot, recordId)
 
-    fun photos(recordId: String): List<File> =
-        photoDir(recordId).listFiles { f -> f.isFile }?.sortedBy { it.name }.orEmpty()
+    fun photos(recordId: String): List<File> = visibleFiles(photoDir(recordId))
 
     // ---------- Certificates ----------
 
     fun certDir(certId: String) = File(certsRoot, certId)
 
-    fun certFiles(certId: String): List<File> =
-        certDir(certId).listFiles { f -> f.isFile }?.sortedBy { it.name }.orEmpty()
+    fun certFiles(certId: String): List<File> = visibleFiles(certDir(certId))
 
     /** The nearest of expiry and survey dates. */
     fun certNextDate(c: Certificate): Long? = listOfNotNull(c.expiryDate, c.surveyDate).minOrNull()
@@ -707,15 +711,52 @@ class PmsStore private constructor(context: Context) {
         save()
     }
 
-    // ---------- Documents ----------
+    // ---------- Photo descriptions ----------
+
+    private fun visibleFiles(dir: File): List<File> =
+        dir.listFiles { f -> f.isFile && !f.name.startsWith(".") }?.sortedBy { it.name }.orEmpty()
+
+    /** Descriptions of the photos/files in [dir], keyed by file name (stored in dir/.captions.json). */
+    fun captions(dir: File): Map<String, String> {
+        val f = File(dir, ".captions.json")
+        if (!f.exists()) return emptyMap()
+        return try {
+            val o = JSONObject(f.readText())
+            o.keys().asSequence().associateWith { o.getString(it) }
+        } catch (e: Exception) {
+            emptyMap()
+        }
+    }
+
+    fun saveCaptions(dir: File, captions: Map<String, String>) {
+        val f = File(dir, ".captions.json")
+        val clean = captions.filter { (name, text) -> text.isNotBlank() && File(dir, name).exists() }
+        if (clean.isEmpty()) { f.delete(); return }
+        dir.mkdirs()
+        f.writeText(JSONObject(clean).toString())
+    }
+
+    // ---------- Documents (PDF and video) ----------
 
     fun docs(nodeIds: Set<String>): List<Doc> = nodeIds.flatMap { id ->
-        File(docsRoot, id).listFiles { f -> f.isFile && f.name.endsWith(".pdf", true) }
+        File(docsRoot, id).listFiles { f -> f.isFile && (f.extension.equals("pdf", true) || f.extension.lowercase() in VIDEO_EXT) }
             ?.map { Doc(it, id) }.orEmpty()
     }
 
-    /** Copies a picked/shared PDF into the item's folder. Blocking I/O: call off the main thread. */
-    fun importDoc(uri: Uri, nodeId: String): File = copyInto(uri, File(docsRoot, nodeId), "pdf")
+    /** Copies a picked/shared PDF or video into the item's folder. Blocking I/O: call off the main thread. */
+    fun importDoc(uri: Uri, nodeId: String): File {
+        val type = ctx.contentResolver.getType(uri).orEmpty()
+        val nameExt = queryDisplayName(uri)?.substringAfterLast('.', "")?.lowercase().orEmpty()
+        val ext = when {
+            nameExt == "pdf" || nameExt in VIDEO_EXT -> nameExt
+            type.startsWith("video/") -> when (type) {
+                "video/quicktime" -> "mov"; "video/3gpp" -> "3gp"; "video/webm" -> "webm"; "video/x-matroska" -> "mkv"
+                else -> "mp4"
+            }
+            else -> "pdf"
+        }
+        return copyInto(uri, File(docsRoot, nodeId), ext)
+    }
 
     /**
      * Copies a picked file into [dir]: images are resized to save space, anything else is copied as-is.
@@ -750,11 +791,11 @@ class PmsStore private constructor(context: Context) {
     fun renameDoc(doc: Doc, newName: String): Boolean {
         val base = sanitize(newName).ifBlank { return false }
         if (base == doc.name) return true
-        return doc.file.renameTo(uniqueFile(doc.file.parentFile!!, base, "pdf"))
+        return doc.file.renameTo(uniqueFile(doc.file.parentFile!!, base, doc.file.extension.lowercase()))
     }
 
     fun moveDoc(doc: Doc, nodeId: String): Boolean =
-        doc.file.renameTo(uniqueFile(File(docsRoot, nodeId), doc.name, "pdf"))
+        doc.file.renameTo(uniqueFile(File(docsRoot, nodeId), doc.name, doc.file.extension.lowercase()))
 
     private fun queryDisplayName(uri: Uri): String? = try {
         ctx.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
