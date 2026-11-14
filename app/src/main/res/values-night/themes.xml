@@ -1,0 +1,10 @@
+<resources>
+    <style name="Theme.ShipDocs" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">#8FCBEF</item>
+        <item name="colorOnPrimary">@color/navy_dark</item>
+        <item name="colorPrimaryContainer">@color/navy</item>
+        <item name="colorOnPrimaryContainer">#CDE5F5</item>
+        <item name="colorSecondary">#8FCBEF</item>
+        <item name="colorTertiary">@color/amber</item>
+    </style>
+</resources>

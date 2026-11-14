@@ -1,0 +1,10 @@
+<resources>
+    <style name="Theme.ShipDocs" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/navy</item>
+        <item name="colorOnPrimary">@android:color/white</item>
+        <item name="colorPrimaryContainer">#CDE5F5</item>
+        <item name="colorOnPrimaryContainer">@color/navy_dark</item>
+        <item name="colorSecondary">@color/sea</item>
+        <item name="colorTertiary">@color/amber</item>
+    </style>
+</resources>
