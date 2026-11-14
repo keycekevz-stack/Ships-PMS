@@ -29,6 +29,7 @@ class TreeAdapter(
     private val onSelect: (Node?) -> Unit,
     private val onToggle: (Node) -> Unit,
     private val onMore: (Node, View) -> Unit,
+    private val onShipInfo: () -> Unit = {},
 ) : ListAdapter<TreeRow, TreeAdapter.Holder>(object : DiffUtil.ItemCallback<TreeRow>() {
     override fun areItemsTheSame(a: TreeRow, b: TreeRow) = a.node?.id == b.node?.id
     override fun areContentsTheSame(a: TreeRow, b: TreeRow) = a == b && a.node?.name == b.node?.name
@@ -58,7 +59,9 @@ class TreeAdapter(
         h.arrow.visibility = if (row.hasChildren) View.VISIBLE else View.INVISIBLE
         h.arrow.rotation = if (row.expanded) 90f else 0f
         h.dot.visibility = if (row.overdue) View.VISIBLE else View.GONE
-        h.more.visibility = if (node == null) View.GONE else View.VISIBLE
+        h.more.visibility = View.VISIBLE
+        h.more.setImageResource(if (node == null) R.drawable.ic_info else R.drawable.ic_more_vert)
+        h.more.contentDescription = if (node == null) "Ship particulars" else ctx.getString(R.string.more)
 
         val highlight = com.google.android.material.color.MaterialColors.getColor(
             h.itemView, com.google.android.material.R.attr.colorPrimaryContainer
@@ -68,7 +71,7 @@ class TreeAdapter(
 
         h.itemView.setOnClickListener { onSelect(node) }
         h.arrow.setOnClickListener { if (node != null) onToggle(node) }
-        h.more.setOnClickListener { if (node != null) onMore(node, it) }
+        h.more.setOnClickListener { if (node != null) onMore(node, it) else onShipInfo() }
         h.itemView.setOnLongClickListener { if (node != null) onMore(node, h.more); node != null }
     }
 }

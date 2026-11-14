@@ -2,8 +2,14 @@
 
 A planned maintenance app for ships that works fully offline. It covers ship maintenance only (not the full SMS).
 
+## Ship particulars
+**Tap the ship name at the top** (or ⓘ on the ship row in the tree) to see the ship's particulars:
+the ship photo; identity (call sign, MMSI, flag, port of registry, type, year built, builder); class and management;
+dimensions and tonnage (GT, NT, DWT, LOA, LBP, breadth, depth, draft); machinery (main engine, power, propeller, auxiliary engines, boilers, speed); and contacts.
+From there you can **Edit** them, **print / save them as a PDF**, or **switch ship**.
+
 ## Several ships
-Keep records for every vessel you have served on. Tap the **ship name at the top** (or ⋮ → *Switch / add ship*) to switch ships or add a new one (name + IMO number).
+Keep records for every vessel you have served on. Tap the **ship name at the top** → *Switch ship* (or ⋮ → *Switch / add ship*) to switch ships or add a new one.
 Each ship has its own structure, jobs, work done, certificates and documents.
 
 **Lock a ship** (⋮ → *Lock this ship*), for example when you sign off. All its records become **read-only**: you can still view and share them, but nothing can be added, changed or deleted.

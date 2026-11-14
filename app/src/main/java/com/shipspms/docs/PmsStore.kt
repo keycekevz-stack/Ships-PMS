@@ -67,6 +67,8 @@ data class Ship(
     var locked: Boolean = false,
     var pinHash: String? = null,
     var pinSalt: String? = null,
+    /** Ship particulars (call sign, flag, GT, main engine…), keyed by field name. */
+    val particulars: MutableMap<String, String> = mutableMapOf(),
 )
 
 /** A place in the ship structure: a group (e.g. Engine Room), sub-group (Main Engine) or item (Fuel Pump). */
@@ -148,6 +150,7 @@ class PmsStore private constructor(context: Context) {
     private val certsRoot = File(ctx.filesDir, "pms_certs")
     private val partsRoot = File(ctx.filesDir, "pms_parts")
     private val jobsRoot = File(ctx.filesDir, "pms_jobs")
+    private val shipsRoot = File(ctx.filesDir, "pms_ships")
 
     val ships = mutableListOf<Ship>()
     val nodes = mutableListOf<Node>()
@@ -212,6 +215,9 @@ class PmsStore private constructor(context: Context) {
                 locked = o.optBoolean("locked", false),
                 pinHash = o.optStringOrNull("pinHash"),
                 pinSalt = o.optStringOrNull("pinSalt"),
+                particulars = o.optJSONObject("particulars")?.let { p ->
+                    p.keys().asSequence().associateWith { p.optString(it) }.toMutableMap()
+                } ?: mutableMapOf(),
             )
         }
         root.optJSONArray("nodes")?.forEachObject { o ->
@@ -297,7 +303,8 @@ class PmsStore private constructor(context: Context) {
             .put("ships", JSONArray().apply {
                 ships.forEach {
                     put(JSONObject().put("id", it.id).put("name", it.name).put("imo", it.imo)
-                        .put("locked", it.locked).put("pinHash", it.pinHash).put("pinSalt", it.pinSalt))
+                        .put("locked", it.locked).put("pinHash", it.pinHash).put("pinSalt", it.pinSalt)
+                        .put("particulars", JSONObject(it.particulars.filterValues { v -> v.isNotBlank() } as Map<*, *>)))
                 }
             })
             .put("nodes", JSONArray().apply {
@@ -379,8 +386,13 @@ class PmsStore private constructor(context: Context) {
 
     fun ship(id: String?): Ship? = id?.let { i -> ships.firstOrNull { it.id == i } }
 
-    fun addShip(name: String, imo: String = ""): Ship {
-        val s = Ship(newId(), name.trim(), imo.trim())
+    /** Photos of the ship itself: files/pms_ships/<shipId>/. */
+    fun shipDir(shipId: String) = File(shipsRoot, shipId)
+
+    fun shipPhotos(shipId: String): List<File> = visibleFiles(shipDir(shipId)).filter { Images.isImage(it) }
+
+    fun addShip(name: String, imo: String = "", id: String = newId()): Ship {
+        val s = Ship(id, name.trim(), imo.trim())
         ships += s
         save()
         return s
@@ -394,6 +406,7 @@ class PmsStore private constructor(context: Context) {
         parts.removeAll { it.shipId == id }
         certs.removeAll { it.shipId == id }
         ships.removeAll { it.id == id }
+        shipDir(id).deleteRecursively()
         if (ships.isEmpty()) ships += Ship(newId(), "My Ship")
         save()
     }
@@ -860,7 +873,7 @@ class PmsStore private constructor(context: Context) {
 
     // ---------- Backup ----------
 
-    private fun fileRoots() = mapOf("docs" to docsRoot, "photos" to photosRoot, "certs" to certsRoot, "parts" to partsRoot, "jobs" to jobsRoot)
+    private fun fileRoots() = mapOf("docs" to docsRoot, "photos" to photosRoot, "certs" to certsRoot, "parts" to partsRoot, "jobs" to jobsRoot, "ships" to shipsRoot)
 
     /** Writes pms.json plus every document, photo and certificate scan into one zip file. */
     fun backup(out: OutputStream) {

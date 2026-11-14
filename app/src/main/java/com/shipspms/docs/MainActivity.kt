@@ -320,13 +320,13 @@ class MainActivity : AppCompatActivity() {
                 R.id.action_restore -> confirmRestore()
                 R.id.action_example -> if (canEdit()) { store.seedExample(shipId); refresh(); drawer?.openDrawer(GravityCompat.START) }
                 R.id.action_ships -> showShips()
-                R.id.action_edit_ship -> if (canEdit()) editShip(ship())
+                R.id.action_edit_ship -> showParticulars()
                 R.id.action_lock -> if (ship().locked) unlockShip(ship()) else lockShip(ship())
                 R.id.action_delete_ship -> if (canEdit()) confirmDeleteShip(ship())
             }
             true
         }
-        toolbar.setOnClickListener { showShips() }
+        toolbar.setOnClickListener { showParticulars() }
         drawer?.let { d ->
             toolbar.setNavigationIcon(R.drawable.ic_menu)
             toolbar.setNavigationContentDescription(R.string.ship_structure)
@@ -350,6 +350,7 @@ class MainActivity : AppCompatActivity() {
                 refreshTree()
             },
             onMore = ::showNodeMenu,
+            onShipInfo = ::showParticulars,
         )
         findViewById<RecyclerView>(R.id.tree).apply {
             layoutManager = LinearLayoutManager(this@MainActivity)
@@ -479,7 +480,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshShip() {
         val s = ship()
-        toolbar.title = (if (s.locked) "🔒 " else "") + s.name + "  ▾"
+        toolbar.title = (if (s.locked) "🔒 " else "") + s.name + "  ⓘ"
         toolbar.subtitle = listOfNotNull(
             s.imo.takeIf { it.isNotBlank() }?.let { "IMO $it" },
             if (s.locked) "Locked – read only" else null,
@@ -1448,49 +1449,232 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    /** Add (existing == null) or rename a ship. */
+    /** Ship particulars: section title, then (key, label, numeric keyboard?) for each field. */
+    private val shipFields: List<Pair<String, List<Triple<String, String, Boolean>>>> = listOf(
+        "Identity" to listOf(
+            Triple("callSign", "Call sign", false),
+            Triple("mmsi", "MMSI", true),
+            Triple("flag", "Flag", false),
+            Triple("port", "Port of registry", false),
+            Triple("type", "Ship type (e.g. Bulk carrier)", false),
+            Triple("built", "Year built", true),
+            Triple("builder", "Builder / shipyard", false),
+        ),
+        "Class & management" to listOf(
+            Triple("classSociety", "Classification society", false),
+            Triple("classNo", "Class no.", false),
+            Triple("owner", "Owner", false),
+            Triple("manager", "Manager / operator", false),
+        ),
+        "Dimensions & tonnage" to listOf(
+            Triple("gt", "Gross tonnage (GT)", false),
+            Triple("nt", "Net tonnage (NT)", false),
+            Triple("dwt", "Deadweight (DWT, t)", false),
+            Triple("loa", "Length overall (LOA, m)", false),
+            Triple("lbp", "Length between perpendiculars (LBP, m)", false),
+            Triple("breadth", "Breadth (m)", false),
+            Triple("depth", "Depth (m)", false),
+            Triple("draft", "Summer draft (m)", false),
+        ),
+        "Machinery" to listOf(
+            Triple("mainEngine", "Main engine (maker / model)", false),
+            Triple("mePower", "Main engine power (kW @ rpm)", false),
+            Triple("propeller", "Propeller (type / blades)", false),
+            Triple("auxEngines", "Auxiliary engines / generators", false),
+            Triple("boiler", "Boiler(s)", false),
+            Triple("speed", "Service speed (knots)", false),
+        ),
+        "Contacts" to listOf(
+            Triple("email", "Ship email", false),
+            Triple("phone", "Ship phone / satellite no.", false),
+            Triple("inmarsat", "Inmarsat C / other", false),
+        ),
+        "Notes" to listOf(
+            Triple("notes", "Other notes", false),
+        ),
+    )
+
+    /** Pop-up with the ship's photo and particulars. Opened by tapping the ship name. */
+    private fun showParticulars() {
+        val s = ship()
+        val d = resources.displayMetrics.density
+        val pad = (20 * d).toInt()
+        val photos = store.shipPhotos(s.id)
+        val muted = com.google.android.material.color.MaterialColors.getColor(toolbar, com.google.android.material.R.attr.colorOnSurfaceVariant)
+
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad / 2, pad, pad / 2)
+        }
+        photos.firstOrNull()?.let { f ->
+            content.addView(ImageView(this).apply {
+                adjustViewBounds = true
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                maxHeight = (200 * d).toInt()
+                setImageBitmap(Images.load(f, resources.displayMetrics.widthPixels))
+                setOnClickListener { openFiles(photos, 0, s.name) }
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                bottomMargin = (10 * d).toInt()
+            })
+        }
+        fun row(label: String, value: String) {
+            content.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(0, (5 * d).toInt(), 0, (5 * d).toInt())
+                addView(TextView(this@MainActivity).apply {
+                    text = label
+                    textSize = 13f
+                    setTextColor(muted)
+                }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.45f))
+                addView(TextView(this@MainActivity).apply {
+                    text = value
+                    textSize = 14f
+                    setTextIsSelectable(true)
+                    setTypeface(null, android.graphics.Typeface.BOLD)
+                }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.55f))
+            })
+        }
+        fun section(title: String) {
+            content.addView(TextView(this).apply {
+                text = title
+                textSize = 13f
+                setTypeface(null, android.graphics.Typeface.BOLD)
+                setTextColor(getColor(R.color.sea))
+                setPadding(0, (12 * d).toInt(), 0, (2 * d).toInt())
+            })
+        }
+
+        row("Ship name", s.name)
+        if (s.imo.isNotBlank()) row("IMO number", s.imo)
+        var any = s.imo.isNotBlank()
+        shipFields.forEach { (title, fields) ->
+            val filled = fields.filter { s.particulars[it.first].orEmpty().isNotBlank() }
+            if (filled.isNotEmpty()) {
+                section(title)
+                filled.forEach { (key, label, _) -> row(label, s.particulars[key].orEmpty()) }
+                any = true
+            }
+        }
+        if (s.locked) row("Status", "🔒 Locked – read only")
+        if (!any) {
+            content.addView(TextView(this).apply {
+                text = "No particulars yet. Tap “Edit” to add call sign, flag, tonnage, dimensions, main engine, class and a photo of the ship."
+                setPadding(0, (10 * d).toInt(), 0, 0)
+            })
+        }
+        content.addView(TextView(this).apply {
+            text = "🖨  Print / save particulars (PDF)"
+            textSize = 14f
+            setTextColor(getColor(R.color.sea))
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            setPadding(0, (16 * d).toInt(), 0, (8 * d).toInt())
+            setOnClickListener { particularsPdf() }
+        })
+
+        MaterialAlertDialogBuilder(this)
+            .setTitle((if (s.locked) "🔒 " else "") + s.name)
+            .setView(android.widget.ScrollView(this).apply { addView(content) })
+            .setPositiveButton("Edit") { _, _ -> if (canEdit()) editShip(s) }
+            .setNeutralButton("Switch ship") { _, _ -> showShips() }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    private fun particularsPdf() {
+        val s = ship()
+        generatePdf("Ship particulars ${s.name}", "Ship Particulars") {
+            title("Ship Particulars – ${s.name}")
+            store.shipPhotos(s.id).firstOrNull()?.let { photo(it, "", maxH = 230f) }
+            fields(listOfNotNull("Ship name" to s.name, ("IMO number" to s.imo).takeIf { s.imo.isNotBlank() }))
+            shipFields.forEach { (section, fields) ->
+                val filled = fields.filter { s.particulars[it.first].orEmpty().isNotBlank() }
+                if (filled.isNotEmpty()) {
+                    heading(section)
+                    fields(filled.map { (key, label, _) -> label to s.particulars[key].orEmpty() })
+                }
+            }
+        }
+    }
+
+    /** Add (existing == null) or edit a ship: name, IMO, all particulars and photos of the ship. */
     private fun editShip(existing: Ship?, firstTime: Boolean = false, after: () -> Unit = {}) {
-        val pad = (20 * resources.displayMetrics.density).toInt()
-        val name = EditText(this).apply {
-            hint = "Ship name (e.g. MV Ocean Star)"
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_WORDS
-            isSingleLine = true
-            setText(existing?.name?.takeIf { !(firstTime && it == "My Ship") })
-        }
-        val imo = EditText(this).apply {
-            hint = "IMO number (optional)"
-            inputType = InputType.TYPE_CLASS_NUMBER
-            isSingleLine = true
-            setText(existing?.imo)
-        }
+        val d = resources.displayMetrics.density
+        val pad = (20 * d).toInt()
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(pad, pad / 2, pad, 0)
-            addView(name); addView(imo)
+            setPadding(pad, pad / 2, pad, pad / 2)
         }
+        fun field(label: String, value: String?, numeric: Boolean, multi: Boolean = false): TextInputEditText {
+            val layout = TextInputLayout(this, null, com.google.android.material.R.attr.textInputOutlinedStyle).apply { hint = label }
+            val edit = TextInputEditText(layout.context).apply {
+                inputType = when {
+                    numeric -> InputType.TYPE_CLASS_NUMBER
+                    multi -> InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                    else -> InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_WORDS
+                }
+                setText(value)
+            }
+            layout.addView(edit)
+            box.addView(layout, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = (8 * d).toInt()
+            })
+            return edit
+        }
+        fun section(title: String) {
+            box.addView(TextView(this).apply {
+                text = title
+                setTypeface(null, android.graphics.Typeface.BOLD)
+                setTextColor(getColor(R.color.sea))
+                setPadding(0, (16 * d).toInt(), 0, 0)
+            })
+        }
+
+        val name = field("Ship name (e.g. MV Ocean Star)", existing?.name?.takeIf { !(firstTime && it == "My Ship") }, false)
+        val imo = field("IMO number", existing?.imo, true)
+        val inputs = mutableMapOf<String, TextInputEditText>()
+        shipFields.forEach { (title, fields) ->
+            section(title)
+            fields.forEach { (key, label, numeric) ->
+                inputs[key] = field(label, existing?.particulars?.get(key), numeric, multi = key == "notes")
+            }
+        }
+
+        // Photos of the ship (the first one is shown on the particulars card).
+        val shipKey = existing?.id ?: PmsStore.newId()
+        val attach = layoutInflater.inflate(R.layout.attachments_section, box, false)
+        box.addView(attach)
+        val photos = FileSession(attach, store.shipDir(shipKey), store.shipPhotos(shipKey), "Photo of the ship (optional)", allowPdf = false, title = "Ship photos")
+
         val dialog = MaterialAlertDialogBuilder(this)
             .setTitle(when {
                 firstTime -> "Welcome to Ship PMS – which ship?"
                 existing == null -> "Add ship"
-                else -> "Edit ship"
+                else -> "Ship particulars"
             })
-            .setView(box)
+            .setView(android.widget.ScrollView(this).apply { addView(box) })
             .setPositiveButton(R.string.save, null)
             .setNegativeButton(if (firstTime) "Later" else getString(R.string.cancel)) { _, _ -> if (firstTime) after() }
             .setCancelable(!firstTime)
             .create()
+        photos.attachTo(dialog)
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 val n = name.text.toString().trim()
-                if (n.isEmpty()) { name.error = "Enter the ship name"; return@setOnClickListener }
-                if (existing == null) {
-                    val s = store.addShip(n, imo.text.toString())
-                    shipId = s.id; selectedId = null
-                } else {
-                    existing.name = n
-                    existing.imo = imo.text.toString().trim()
-                    store.save()
+                if (n.isEmpty()) {
+                    (name.parent?.parent as? TextInputLayout)?.error = "Enter the ship name"
+                    name.requestFocus()
+                    return@setOnClickListener
                 }
+                photos.commit()
+                val target = existing ?: store.addShip(n, imo.text.toString(), shipKey)
+                target.name = n
+                target.imo = imo.text.toString().trim()
+                inputs.forEach { (key, edit) ->
+                    val v = edit.text.toString().trim()
+                    if (v.isEmpty()) target.particulars.remove(key) else target.particulars[key] = v
+                }
+                store.save()
+                if (existing == null) { shipId = shipKey; selectedId = null }
                 dialog.dismiss()
                 refresh()
                 after()
